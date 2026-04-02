@@ -28,6 +28,10 @@ ini_set('display_errors', 1);
 // 设置响应头为JSON
 header('Content-Type: application/json; charset=utf-8');
 
+// 硬编码版本和服务器类型
+define('STATION_VERSION', 'b26.4.2');
+define('SERVER_TYPE', 'php');
+
 // 定义目录常量
 define('ROOT_DIR', __DIR__);
 define('DATA_DIR', ROOT_DIR . '/data');
@@ -42,10 +46,10 @@ if (!file_exists(USER_DIR)) mkdir(USER_DIR, 0755, true);
 if (!file_exists(CHAT_DIR)) mkdir(CHAT_DIR, 0755, true);
 if (!file_exists(AVATAR_DIR)) mkdir(AVATAR_DIR, 0755, true);
 
-// 首次运行生成配置文件（确保包含 [stationPHP] 节）
+// 首次运行生成配置文件（只包含 [station] 节）
 if (!file_exists(CONFIG_FILE)) {
     $stationID = generateRandomString(16);
-    $configContent = "[station]\nstationID={$stationID}\nstationNumberDaysInformationStored=3\nstationWhetherCompletelyDeleteUserData=true\n\n[stationPHP]\nstationPHPVersion=\"b26.4.2\"\n";
+    $configContent = "[station]\nstationID={$stationID}\nstationNumberDaysInformationStored=3\nstationWhetherCompletelyDeleteUserData=true\n";
     file_put_contents(CONFIG_FILE, $configContent);
 }
 
@@ -55,11 +59,6 @@ $config = $fullConfig['station'];
 $stationID = $config['stationID'];
 $daysToKeep = (int)$config['stationNumberDaysInformationStored'];
 $completelyDelete = filter_var($config['stationWhetherCompletelyDeleteUserData'], FILTER_VALIDATE_BOOLEAN);
-
-// 读取 stationPHP 版本，若不存在则设为 unknown
-$stationPHPVersion = isset($fullConfig['stationPHP']['stationPHPVersion']) 
-    ? $fullConfig['stationPHP']['stationPHPVersion'] 
-    : 'unknown';
 
 // 用户索引文件（映射用户ID -> 文件编号）
 $userIndexFile = DATA_DIR . '/user_index.json';
@@ -229,8 +228,12 @@ try {
             deleteAccount($user);
             break;
 
-case 'get_station_php_version':
-    getStationPHPVersion();
+case 'get_station_version':
+    getStationVersion();
+    break;
+
+case 'get_server_type':
+    getServerType();
     break;
 
 case 'get_verify_setting':
@@ -788,11 +791,13 @@ function acceptFriendRequest($user) {
     });
 
     sendResponse(200, 'Friend request accepted');
-
 }
 
-function getStationPHPVersion() {
-    global $stationPHPVersion;
-    sendResponse(200, 'Station PHP version retrieved', ['version' => $stationPHPVersion]);
+function getStationVersion() {
+    sendResponse(200, 'Station version retrieved', ['version' => STATION_VERSION]);
+}
+
+function getServerType() {
+    sendResponse(200, 'Server type retrieved', ['type' => SERVER_TYPE]);
 }
 ?>
