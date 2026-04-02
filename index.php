@@ -463,11 +463,43 @@ function getMessages($user) {
     if (!in_array($friendUid, $user['friends'])) sendResponse(403, 'Not friends');
 
     $chatFile = CHAT_DIR . '/' . $user['id'] . '/' . $friendUid . '.json';
-    if (!file_exists($chatFile)) sendResponse(200, 'No messages', []);
-    $lines = file($chatFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    $messages = array_map('json_decode', $lines, array_fill(0, count($lines), true));
-    usort($messages, function($a, $b) { return $a['time'] - $b['time']; });
-    sendResponse(200, 'Messages retrieved', $messages);
+    $messages = [];
+    if (file_exists($chatFile)) {
+        $lines = file($chatFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        foreach ($lines as $line) {
+            $msg = json_decode($line, true);
+            if (is_array($msg) && isset($msg['time'])) {
+                $messages[] = $msg;
+            }
+        }
+        // 按时间升序排序（旧→新）
+        usort($messages, function($a, $b) { return $a['time'] - $b['time']; });
+    }
+
+    // 增量模式：只返回 since 时间之后的消息
+    $since = isset($_GET['since']) ? (int)$_GET['since'] : 0;
+    if ($since > 0) {
+        $result = array_values(array_filter($messages, function($msg) use ($since) {
+            return $msg['time'] > $since;
+        }));
+        sendResponse(200, 'Messages retrieved', $result);
+        return;
+    }
+
+    // 分页模式
+    $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    $limit = isset($_GET['limit']) ? min(100, max(1, (int)$_GET['limit'])) : 20;
+    $total = count($messages);
+    $offset = ($page - 1) * $limit;
+    $pagedMessages = array_slice($messages, $offset, $limit);
+
+    sendResponse(200, 'Messages retrieved', [
+        'messages' => $pagedMessages,
+        'total' => $total,
+        'page' => $page,
+        'limit' => $limit,
+        'total_pages' => ceil($total / $limit)
+    ]);
 }
 
 function deleteAccount($user) {

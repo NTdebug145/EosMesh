@@ -24,6 +24,7 @@
         body { margin: 0; background-color: #f5f5f5; }
         .search-result { display: flex; align-items: center; padding: 8px; margin-top: 8px; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; }
         .search-result:hover { background-color: #f5f5f5; }
+        .loading-more-indicator { text-align: center; padding: 8px; color: #888; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -230,7 +231,7 @@
         );
     }
 
-    // ==================== MainApp ====================
+    // ==================== MainApp (分页+增量轮询) ====================
     function MainApp({ onLogout, darkMode, setDarkMode }) {
         const { uid, token } = getAuth();
         const [friends, setFriends] = React.useState([]);
@@ -238,7 +239,6 @@
         const [messages, setMessages] = React.useState([]);
         const [inputMsg, setInputMsg] = React.useState('');
         const [loadingFriends, setLoadingFriends] = React.useState(false);
-        const [loadingMessages, setLoadingMessages] = React.useState(false);
         const [sending, setSending] = React.useState(false);
         const [snackbar, setSnackbar] = React.useState({ open: false, message: '', severity: 'info' });
         const [addFriendOpen, setAddFriendOpen] = React.useState(false);
@@ -263,26 +263,172 @@
         const [showFriendList, setShowFriendList] = React.useState(false);
         const [fullUserInfo, setFullUserInfo] = React.useState(null);
         
+        // 分页与增量相关状态
+        const [hasMore, setHasMore] = React.useState(false);
+        const [currentPage, setCurrentPage] = React.useState(1);
+        const [totalPages, setTotalPages] = React.useState(0);
+        const [loadingMessages, setLoadingMessages] = React.useState(false);
+        const [loadingMore, setLoadingMore] = React.useState(false);
+        const [latestMsgTime, setLatestMsgTime] = React.useState(0);
+        
         const messagesRef = React.useRef([]);
         const chatContainerRef = React.useRef(null);
         const [shouldAutoScroll, setShouldAutoScroll] = React.useState(true);
         const myAvatarUrl = React.useMemo(()=>getAvatarUrl(uid, avatarVersion), [uid, avatarVersion]);
-        const handleScroll = React.useCallback(() => { if(chatContainerRef.current){ const {scrollTop,scrollHeight,clientHeight}=chatContainerRef.current; setShouldAutoScroll(scrollHeight-scrollTop-clientHeight<50); } }, []);
-        React.useEffect(() => { if(shouldAutoScroll && chatContainerRef.current) chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight; }, [messages, shouldAutoScroll]);
-        const scrollToBottom = React.useCallback(() => {if (chatContainerRef.current) {chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight; setShouldAutoScroll(true);}}, []);
 
-        // 获取当前用户完整信息（用于用户资料页）—— 修复字段映射
-        const fetchFullUserInfo = React.useCallback(async () => {
-            try {
-                const data = await apiRequest('get_user_info', { method:'POST', body:{ uid }, token });
-                // 后端返回字段：registered_at, message_count, station_id
-                setFullUserInfo(data.data);
-            } catch(e) {
-                console.error("获取用户完整信息失败", e);
-                setFullUserInfo(null);
+        // 滚动监听（自动滚动到底部 & 顶部加载更多）
+        const handleScroll = React.useCallback(() => {
+            if (chatContainerRef.current) {
+                const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+                const isNearBottom = scrollHeight - scrollTop - clientHeight < 50;
+                setShouldAutoScroll(isNearBottom);
+                // 滚动到顶部且还有更多历史消息时加载上一页
+                if (scrollTop <= 50 && hasMore && !loadingMore && selectedFriend) {
+                    loadMoreMessages();
+                }
             }
-        }, [uid, token]);
+        }, [hasMore, loadingMore, selectedFriend]);
 
+        // 滚动到底部
+        const scrollToBottom = React.useCallback(() => {
+            if (chatContainerRef.current && shouldAutoScroll) {
+                chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+            }
+        }, [shouldAutoScroll]);
+
+        // 加载历史消息（上一页）
+        const loadMoreMessages = async () => {
+            if (loadingMore || !hasMore || !selectedFriend) return;
+            setLoadingMore(true);
+            const prevScrollHeight = chatContainerRef.current?.scrollHeight || 0;
+            const nextPage = currentPage - 1;
+            try {
+                const data = await apiRequest('get_messages', { 
+                    token, method:'GET', 
+                    query: { friend_uid: selectedFriend.uid, page: nextPage, limit: 20 } 
+                });
+                const olderMessages = data.data.messages; // 升序（旧→新）
+                if (olderMessages && olderMessages.length > 0) {
+                    setMessages(prev => [...olderMessages, ...prev]);
+                    setCurrentPage(nextPage);
+                    setHasMore(nextPage > 1);
+                    // 恢复滚动位置：新内容插入后滚动高度增加，保持原可视区域相对位置
+                    setTimeout(() => {
+                        if (chatContainerRef.current) {
+                            const newScrollHeight = chatContainerRef.current.scrollHeight;
+                            chatContainerRef.current.scrollTop = newScrollHeight - prevScrollHeight;
+                        }
+                    }, 0);
+                } else {
+                    setHasMore(false);
+                }
+            } catch(err) {
+                setSnackbar({ open:true, message:`加载历史消息失败: ${err.message}`, severity:'error' });
+            } finally {
+                setLoadingMore(false);
+            }
+        };
+
+        // 轮询获取新消息（增量）
+        const pollNewMessages = React.useCallback(async () => {
+            if (!selectedFriend || latestMsgTime === 0) return;
+            try {
+                const data = await apiRequest('get_messages', { 
+                    token, method:'GET', 
+                    query: { friend_uid: selectedFriend.uid, since: latestMsgTime } 
+                });
+                const newMsgs = data.data;
+                if (newMsgs && newMsgs.length > 0) {
+                    setMessages(prev => {
+                        const merged = [...prev, ...newMsgs];
+                        // 简单去重（基于时间和发送者）
+                        const unique = [];
+                        const map = new Map();
+                        for (const msg of merged) {
+                            const key = `${msg.from}_${msg.time}`;
+                            if (!map.has(key)) map.set(key, msg);
+                        }
+                        const result = Array.from(map.values());
+                        result.sort((a,b) => a.time - b.time);
+                        return result;
+                    });
+                    const newestTime = newMsgs[newMsgs.length - 1].time;
+                    if (newestTime > latestMsgTime) setLatestMsgTime(newestTime);
+                    scrollToBottom();
+                }
+            } catch(err) {
+                console.error("轮询新消息失败", err);
+            }
+        }, [selectedFriend, latestMsgTime, token, scrollToBottom]);
+
+        // 初始化聊天：获取总消息数并加载最后一页
+        const initMessages = async (friendUid) => {
+            if (!friendUid) return;
+            setLoadingMessages(true);
+            setMessages([]);
+            setHasMore(false);
+            setCurrentPage(1);
+            setTotalPages(0);
+            setLatestMsgTime(0);
+            try {
+                // 先获取总条数（请求第一页，limit=1）
+                const firstData = await apiRequest('get_messages', { token, method:'GET', query: { friend_uid: friendUid, page: 1, limit: 1 } });
+                const total = firstData.data.total || 0;
+                const limit = 20;
+                const totalPagesCalc = Math.ceil(total / limit);
+                setTotalPages(totalPagesCalc);
+                if (totalPagesCalc === 0) {
+                    setMessages([]);
+                    setHasMore(false);
+                    setCurrentPage(0);
+                    setLatestMsgTime(0);
+                    return;
+                }
+                const lastPage = totalPagesCalc;
+                const pageData = await apiRequest('get_messages', { token, method:'GET', query: { friend_uid: friendUid, page: lastPage, limit } });
+                const loadedMsgs = pageData.data.messages || [];
+                setMessages(loadedMsgs);
+                setCurrentPage(lastPage);
+                setHasMore(lastPage > 1);
+                if (loadedMsgs.length > 0) {
+                    const latest = loadedMsgs[loadedMsgs.length - 1];
+                    setLatestMsgTime(latest.time);
+                }
+setTimeout(() => {
+    if (chatContainerRef.current) {
+        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+    setShouldAutoScroll(true);
+}, 100);
+                scrollToBottom();
+            } catch(err) {
+                setSnackbar({ open:true, message:`加载消息失败: ${err.message}`, severity:'error' });
+            } finally {
+                setLoadingMessages(false);
+            }
+        };
+
+        // 发送消息
+const sendMessage = async () => {
+    if (!selectedFriend || !inputMsg.trim()) return;
+    setSending(true);
+    try {
+        await apiRequest('send_message', { token, body:{ to_uid: selectedFriend.uid, content: inputMsg.trim() } });
+        setInputMsg('');
+        await pollNewMessages(); // 立即拉取新消息
+        // 强制滚动到底部（忽略 shouldAutoScroll）
+        if (chatContainerRef.current) {
+            chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+        }
+        setShouldAutoScroll(true); // 重置自动滚动标志
+    } catch(err){
+        setSnackbar({ open:true, message:`发送失败: ${err.message}`, severity:'error' });
+    } finally {
+        setSending(false);
+    }
+};
+
+        // 其他原有函数
         const fetchUserInfo = React.useCallback(async () => { 
             try { 
                 const data = await apiRequest('get_user_info', { method:'POST', body:{ uid }, token }); 
@@ -290,17 +436,72 @@
             } catch(e) { console.error(e); } 
         }, [uid, token]);
 
-        const fetchFriends = React.useCallback(async () => { setLoadingFriends(true); try { const data = await apiRequest('get_friends', { token, method:'GET' }); setFriends(data.data||[]); } catch(err){ setSnackbar({ open:true, message:`加载好友失败: ${err.message}`, severity:'error' }); } finally { setLoadingFriends(false); } }, [token]);
-        const fetchMessages = React.useCallback(async (friendUid) => { if(!friendUid) return; setLoadingMessages(true); try { const data = await apiRequest('get_messages', { token, method:'GET', query:{ friend_uid: friendUid } }); const newMessages = data.data||[]; if(JSON.stringify(messagesRef.current)!==JSON.stringify(newMessages)){ setMessages(newMessages); messagesRef.current=newMessages; } } catch(err){ setSnackbar({ open:true, message:`加载消息失败: ${err.message}`, severity:'error' }); } finally { setLoadingMessages(false); } }, [token]);
-        const sendMessage = async () => { if(!selectedFriend || !inputMsg.trim()) return; setSending(true); try { await apiRequest('send_message', { token, body:{ to_uid: selectedFriend.uid, content: inputMsg.trim() } }); setInputMsg(''); await fetchMessages(selectedFriend.uid); scrollToBottom();} catch(err){ setSnackbar({ open:true, message:`发送失败: ${err.message}`, severity:'error' }); } finally { setSending(false); } };
-        const handleAvatarUpload = async () => { if(!avatarFile) return; const formData = new FormData(); formData.append('avatar', avatarFile); setUploadingAvatar(true); try { await apiRequest('upload_avatar', { token, method:'POST', body: formData, isFormData:true }); setSnackbar({ open:true, message:'头像上传成功', severity:'success' }); setAvatarUploadOpen(false); setAvatarFile(null); fetchUserInfo(); setAvatarVersion(Date.now()); } catch(err){ setSnackbar({ open:true, message:`上传失败: ${err.message}`, severity:'error' }); } finally { setUploadingAvatar(false); } };
-        const handleUpdateApiBase = () => { if(!tempApiBase.trim()){ setSnackbar({ open:true, message:'站点链接不能为空', severity:'error' }); return; } setApiBase(tempApiBase.trim()); clearAuth(); setSettingsOpen(false); onLogout(); setSnackbar({ open:true, message:'站点链接已更改，请重新登录', severity:'info' }); };
-        const handleLogout = () => { clearAuth(); onLogout(); };
-        
-        React.useEffect(() => { fetchUserInfo(); fetchFriends(); }, [fetchUserInfo, fetchFriends]);
-        React.useEffect(() => { if(selectedFriend) fetchMessages(selectedFriend.uid); }, [selectedFriend, fetchMessages]);
-        React.useEffect(() => { const interval = setInterval(() => { if(selectedFriend) fetchMessages(selectedFriend.uid); fetchFriends(); }, 5000); return ()=>clearInterval(interval); }, [selectedFriend, fetchMessages, fetchFriends]);
+        const fetchFriends = React.useCallback(async () => { 
+            setLoadingFriends(true); 
+            try { 
+                const data = await apiRequest('get_friends', { token, method:'GET' }); 
+                setFriends(data.data||[]); 
+            } catch(err){ 
+                setSnackbar({ open:true, message:`加载好友失败: ${err.message}`, severity:'error' }); 
+            } finally { 
+                setLoadingFriends(false); 
+            } 
+        }, [token]);
 
+        const fetchFullUserInfo = React.useCallback(async () => {
+            try {
+                const data = await apiRequest('get_user_info', { method:'POST', body:{ uid }, token });
+                setFullUserInfo(data.data);
+            } catch(e) {
+                console.error("获取用户完整信息失败", e);
+                setFullUserInfo(null);
+            }
+        }, [uid, token]);
+
+        const handleAvatarUpload = async () => { 
+            if(!avatarFile) return; 
+            const formData = new FormData(); 
+            formData.append('avatar', avatarFile); 
+            setUploadingAvatar(true); 
+            try { 
+                await apiRequest('upload_avatar', { token, method:'POST', body: formData, isFormData:true }); 
+                setSnackbar({ open:true, message:'头像上传成功', severity:'success' }); 
+                setAvatarUploadOpen(false); 
+                setAvatarFile(null); 
+                fetchUserInfo(); 
+                setAvatarVersion(Date.now()); 
+            } catch(err){ 
+                setSnackbar({ open:true, message:`上传失败: ${err.message}`, severity:'error' }); 
+            } finally { 
+                setUploadingAvatar(false); 
+            } 
+        };
+
+        const handleUpdateApiBase = () => { 
+            if(!tempApiBase.trim()){ 
+                setSnackbar({ open:true, message:'站点链接不能为空', severity:'error' }); 
+                return; 
+            } 
+            setApiBase(tempApiBase.trim()); 
+            clearAuth(); 
+            setSettingsOpen(false); 
+            onLogout(); 
+            setSnackbar({ open:true, message:'站点链接已更改，请重新登录', severity:'info' }); 
+        };
+        
+        const handleLogout = () => { clearAuth(); onLogout(); };
+
+        React.useEffect(() => { fetchUserInfo(); fetchFriends(); }, [fetchUserInfo, fetchFriends]);
+        React.useEffect(() => { if (selectedFriend) initMessages(selectedFriend.uid); }, [selectedFriend]);
+        
+        // 轮询新消息（5秒）
+        React.useEffect(() => {
+            if (!selectedFriend) return;
+            const interval = setInterval(() => { pollNewMessages(); }, 5000);
+            return () => clearInterval(interval);
+        }, [selectedFriend, pollNewMessages]);
+
+        // 好友搜索防抖
         React.useEffect(() => {
             const timer = setTimeout(() => {
                 if(newFriendName.trim() && /^[A-Z0-9]{32}$/.test(newFriendName.trim())){
@@ -322,11 +523,7 @@
             }).catch(err => { setSnackbar({ open:true, message:`添加失败: ${err.message}`, severity:'error' }); }).finally(() => { setAddingFriend(false); setConfirmAddOpen(false); setPendingFriend(null); });
         };
 
-        React.useEffect(() => {
-            if (showUserProfile) {
-                fetchFullUserInfo();
-            }
-        }, [showUserProfile, fetchFullUserInfo]);
+        React.useEffect(() => { if (showUserProfile) fetchFullUserInfo(); }, [showUserProfile, fetchFullUserInfo]);
 
         return (
             <Box sx={{ display:'flex', height:'100vh', flexDirection:'column' }}>
@@ -385,13 +582,11 @@
                         <MessagesPage fetchFriends={fetchFriends} tabValue={messagesPageTab} setTabValue={setMessagesPageTab} />
                     ) : showUserProfile ? (
                         fullUserInfo ? (
-                            // 修复：改为垂直单列布局，左标签右值，避免换行挤压
                             <Box sx={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', bgcolor:'background.default', p:3, overflow:'auto' }}>
                                 <Avatar src={getAvatarUrl(uid, avatarVersion)} sx={{ width: 120, height: 120, mb: 2 }} />
                                 <Typography variant="h5" gutterBottom>{fullUserInfo.username}</Typography>
                                 <Paper variant="outlined" sx={{ p: 3, width: '100%', maxWidth: 600, overflow: 'hidden' }}>
                                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                                        {/* UID 单独一行，带复制按钮 */}
                                         <Box sx={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 1 }}>
                                             <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>UID：</Typography>
                                             <Box sx={{ flex: 1, wordBreak: 'break-all' }}>
@@ -399,17 +594,14 @@
                                                 <Button size="small" variant="text" sx={{ fontSize: '12px', p: '0 6px', minWidth: 'auto', textTransform: 'none', color: '#1976d2' }} onClick={() => { navigator.clipboard.writeText(uid); setSnackbar({ open: true, message: 'UID复制成功', severity: 'success' }); }}>复制</Button>
                                             </Box>
                                         </Box>
-                                        {/* 注册时间 */}
                                         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
                                             <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>注册时间：</Typography>
                                             <Typography variant="body1" sx={{ color: 'text.primary' }}>{fullUserInfo.registered_at ? formatTime(fullUserInfo.registered_at) : '未知'}</Typography>
                                         </Box>
-                                        {/* 站点ID */}
                                         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
                                             <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>站点ID：</Typography>
                                             <Typography variant="body1" sx={{ color: 'text.primary', wordBreak: 'break-all' }}>{fullUserInfo.station_id || '未知'}</Typography>
                                         </Box>
-                                        {/* 发送消息数 */}
                                         <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
                                             <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>发送消息数：</Typography>
                                             <Typography variant="body1" sx={{ color: 'text.primary' }}>{fullUserInfo.message_count ?? 0}</Typography>
@@ -437,12 +629,12 @@
                             </List>
                         </Box>
                     ) : (
-                        // 主聊天界面
+                        // 主聊天界面（带分页和增量轮询）
                         <>
                             <Paper elevation={0} sx={{ width:280, borderRight:'1px solid', borderColor:'divider', overflowY:'auto', bgcolor:'background.paper' }}>
                                 <List>
                                     {friends.map(friend => (
-                                        <ListItem key={friend.uid} button selected={selectedFriend?.uid===friend.uid} onClick={()=>{setSelectedFriend(friend);scrollToBottom();}} sx={{ borderRadius:1, mx:1, mb:0.5 }}>
+                                        <ListItem key={friend.uid} button selected={selectedFriend?.uid===friend.uid} onClick={()=>{setSelectedFriend(friend);}} sx={{ borderRadius:1, mx:1, mb:0.5 }}>
                                             <ListItemAvatar><Avatar src={getAvatarUrl(friend.uid)} onError={(e)=>{ e.target.onerror=null; e.target.src=''; }}><Icon>person</Icon></Avatar></ListItemAvatar>
                                             <ListItemText primary={friend.username} />
                                         </ListItem>
@@ -460,8 +652,9 @@
                                         </Box>
                                         {loadingMessages && <LinearProgress sx={{ position:'absolute', top:0, left:0, right:0, zIndex:1 }} />}
                                         <Box className="chat-messages" ref={chatContainerRef} onScroll={handleScroll}>
+                                            {loadingMore && <div className="loading-more-indicator">加载更早消息...</div>}
                                             {messages.length===0 ? <Typography variant="body2" sx={{ textAlign:'center', color:'text.secondary', mt:4 }}>暂无消息，发送一条吧~</Typography> : messages.map((msg,idx)=>(
-                                                <Box key={`${msg.from}_${msg.time}_${msg.content}_${idx}`} sx={{ display:'flex', justifyContent:msg.from===uid?'flex-end':'flex-start', mb:1 }}>
+                                                <Box key={`${msg.from}_${msg.time}_${idx}`} sx={{ display:'flex', justifyContent:msg.from===uid?'flex-end':'flex-start', mb:1 }}>
                                                     <div className={`message-bubble ${msg.from===uid?'message-mine':'message-other'}`}>
                                                         <Typography variant="body2">{msg.content}</Typography>
                                                         <Typography variant="caption" className="message-time" sx={{ display:'block', textAlign:'right', color:msg.from===uid?'#ddd':'#666' }}>{formatTime(msg.time)}</Typography>
@@ -479,7 +672,7 @@
                         </>
                     )}
                 </Box>
-                {/* 各种 Dialog */}
+                {/* Dialog 部分保持不变 */}
                 <Dialog open={addFriendOpen} onClose={()=>{ setAddFriendOpen(false); setNewFriendName(''); setSearchResult(null); }}>
                     <DialogTitle>添加好友</DialogTitle>
                     <DialogContent>
