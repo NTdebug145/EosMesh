@@ -1,371 +1,244 @@
 <?php
 /**
- * EosMesh - 去中心化API脚本
- * 纯API接口，无HTML输出
+ * EosMesh - 去中心化API（独立文件存储版，修复映射覆盖问题）
+ * 每个用户独立文件，彻底解决数据覆盖，兼容 PHP 7.3+
  */
 
 ob_clean();
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/data/error.log');
 
-// 允许跨域
+set_exception_handler(function($e) {
+    sendResponse(500, 'Server error: ' . $e->getMessage());
+});
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
-
-// 处理预检请求 (OPTIONS)
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    // 明确返回 CORS 头部
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization");
     http_response_code(200);
     exit();
 }
-
-// 错误报告（生产环境应关闭）
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
-// 设置响应头为JSON
 header('Content-Type: application/json; charset=utf-8');
 
-// 硬编码版本和服务器类型
 define('STATION_VERSION', 'b26.4.2');
 define('SERVER_TYPE', 'php');
-
-// 定义目录常量
 define('ROOT_DIR', __DIR__);
 define('DATA_DIR', ROOT_DIR . '/data');
 define('USER_DIR', DATA_DIR . '/user');
 define('CHAT_DIR', DATA_DIR . '/chat/friend');
 define('AVATAR_DIR', DATA_DIR . '/avatar');
 define('CONFIG_FILE', ROOT_DIR . '/station.ini');
+define('MAX_MESSAGE_LEN', 1500);
+define('MAX_AVATAR_SIZE', 2 * 1024 * 1024);
 
-// 初始化目录结构
-if (!file_exists(DATA_DIR)) mkdir(DATA_DIR, 0755, true);
-if (!file_exists(USER_DIR)) mkdir(USER_DIR, 0755, true);
-if (!file_exists(CHAT_DIR)) mkdir(CHAT_DIR, 0755, true);
-if (!file_exists(AVATAR_DIR)) mkdir(AVATAR_DIR, 0755, true);
-
-// 首次运行生成配置文件（只包含 [station] 节）
-if (!file_exists(CONFIG_FILE)) {
-    $stationID = generateRandomString(16);
-    $configContent = "[station]\nstationID={$stationID}\nstationNumberDaysInformationStored=3\nstationWhetherCompletelyDeleteUserData=true\n";
-    file_put_contents(CONFIG_FILE, $configContent);
+foreach ([DATA_DIR, USER_DIR, CHAT_DIR, AVATAR_DIR] as $dir) {
+    if (!file_exists($dir)) mkdir($dir, 0755, true);
 }
 
-// 读取完整配置
+if (!file_exists(CONFIG_FILE)) {
+    $stationID = generateRandomString(16);
+    file_put_contents(CONFIG_FILE, "[station]\nstationID={$stationID}\nstationNumberDaysInformationStored=3\nstationWhetherCompletelyDeleteUserData=true\n");
+}
 $fullConfig = parse_ini_file(CONFIG_FILE, true);
 $config = $fullConfig['station'];
 $stationID = $config['stationID'];
 $daysToKeep = (int)$config['stationNumberDaysInformationStored'];
 $completelyDelete = filter_var($config['stationWhetherCompletelyDeleteUserData'], FILTER_VALIDATE_BOOLEAN);
 
-// 用户索引文件（映射用户ID -> 文件编号）
-$userIndexFile = DATA_DIR . '/user_index.json';
-if (!file_exists($userIndexFile)) {
-    file_put_contents($userIndexFile, json_encode([]));
-}
+// 用户名映射缓存（username → uid）
+$usernameMapFile = DATA_DIR . '/username_map.json';
+if (!file_exists($usernameMapFile)) file_put_contents($usernameMapFile, json_encode([]));
 
-// 辅助函数
 function generateRandomString($length) {
-    $characters = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    $charactersLength = strlen($characters);
-    $randomString = '';
+    $chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    $max = strlen($chars) - 1;
+    $str = '';
     for ($i = 0; $i < $length; $i++) {
-        $randomString .= $characters[rand(0, $charactersLength - 1)];
+        $str .= $chars[mt_rand(0, $max)];
     }
-    return $randomString;
-}
-
-function getUserFileByID($uid) {
-    $index = json_decode(file_get_contents($GLOBALS['userIndexFile']), true);
-    if (!isset($index[$uid])) {
-        return null;
-    }
-    $fileNum = $index[$uid];
-    return USER_DIR . "/user_{$fileNum}.json";
+    return $str;
 }
 
 function getUserData($uid) {
-    $file = getUserFileByID($uid);
-    if (!$file || !file_exists($file)) {
-        return null;
-    }
-    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    foreach ($lines as $line) {
-        $user = json_decode($line, true);
-        if ($user && $user['id'] === $uid && (!isset($user['deleted']) || $user['deleted'] !== true)) {
-            return $user;
-        }
+    $file = USER_DIR . '/' . $uid . '.json';
+    if (!file_exists($file)) return null;
+    $fp = fopen($file, 'r');
+    if (flock($fp, LOCK_SH)) {
+        $data = file_get_contents($file);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        $user = json_decode($data, true);
+        if ($user && empty($user['deleted'])) return $user;
+    } else {
+        fclose($fp);
     }
     return null;
 }
 
 function saveUserData($user) {
     $uid = $user['id'];
-    $index = json_decode(file_get_contents($GLOBALS['userIndexFile']), true);
-    if (!isset($index[$uid])) {
-        // 分配文件
-        $files = glob(USER_DIR . '/user_*.json');
-        $maxNum = 0;
-        foreach ($files as $file) {
-            if (preg_match('/user_(\d+)\.json/', $file, $matches)) {
-                $maxNum = max($maxNum, (int)$matches[1]);
-            }
-        }
-        $targetFileNum = null;
-        for ($i = 1; $i <= $maxNum + 1; $i++) {
-            $filePath = USER_DIR . "/user_{$i}.json";
-            if (!file_exists($filePath)) {
-                $targetFileNum = $i;
-                break;
-            }
-            $lines = file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-            if (count($lines) < 50) {
-                $targetFileNum = $i;
-                break;
-            }
-        }
-        if ($targetFileNum === null) $targetFileNum = $maxNum + 1;
-        $index[$uid] = $targetFileNum;
-        file_put_contents($GLOBALS['userIndexFile'], json_encode($index));
+    $file = USER_DIR . '/' . $uid . '.json';
+    $fp = fopen($file, 'c+');
+    if (flock($fp, LOCK_EX)) {
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, json_encode($user));
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return true;
     }
-    $fileNum = $index[$uid];
-    $filePath = USER_DIR . "/user_{$fileNum}.json";
-    // 读取现有数据，替换或追加
-    $lines = file_exists($filePath) ? file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
-    $found = false;
-    $newLines = [];
-    foreach ($lines as $line) {
-        $u = json_decode($line, true);
-        if ($u && $u['id'] === $uid) {
-            $newLines[] = json_encode($user);
-            $found = true;
-        } else {
-            $newLines[] = $line;
-        }
-    }
-    if (!$found) {
-        $newLines[] = json_encode($user);
-    }
-    file_put_contents($filePath, implode("\n", $newLines) . "\n");
+    fclose($fp);
+    return false;
 }
 
 function updateUserData($uid, $callback) {
     $user = getUserData($uid);
     if (!$user) return false;
     $user = $callback($user);
-    saveUserData($user);
+    return saveUserData($user);
+}
+
+/**
+ * 获取用户名映射（线程安全，返回数组）
+ */
+function getUsernameMap() {
+    global $usernameMapFile;
+    $fp = fopen($usernameMapFile, 'r');
+    if (!$fp) return [];
+    if (flock($fp, LOCK_SH)) {
+        $content = '';
+        while (!feof($fp)) $content .= fread($fp, 8192);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        $map = json_decode($content, true);
+        return is_array($map) ? $map : [];
+    }
+    fclose($fp);
+    return [];
+}
+
+/**
+ * 更新用户名映射（原子操作）
+ */
+function updateUsernameMap($username, $uid = null) {
+    global $usernameMapFile;
+    $fp = fopen($usernameMapFile, 'c+');
+    if (!$fp) return false;
+    if (!flock($fp, LOCK_EX)) {
+        fclose($fp);
+        return false;
+    }
+    // 读取当前完整内容
+    $content = '';
+    while (!feof($fp)) $content .= fread($fp, 8192);
+    $map = json_decode($content, true);
+    if (!is_array($map)) $map = [];
+    if ($uid === null) {
+        unset($map[$username]);
+    } else {
+        $map[$username] = $uid;
+    }
+    // 写回
+    ftruncate($fp, 0);
+    rewind($fp);
+    fwrite($fp, json_encode($map));
+    fflush($fp);
+    flock($fp, LOCK_UN);
+    fclose($fp);
     return true;
+}
+
+/**
+ * 通过用户名查找 UID（使用映射缓存）
+ */
+function getUidByUsername($username) {
+    $map = getUsernameMap();
+    return $map[$username] ?? null;
 }
 
 function authenticate() {
     $headers = getallheaders();
     $token = $headers['Authorization'] ?? $_GET['token'] ?? null;
-    if (!$token) {
-        sendResponse(401, 'Missing token');
-    }
-    // token格式: uid:signature
+    if (!$token) sendResponse(401, 'Missing token');
     $parts = explode(':', $token);
-    if (count($parts) != 2) {
-        sendResponse(401, 'Invalid token');
-    }
+    if (count($parts) != 2) sendResponse(401, 'Invalid token');
     list($uid, $signature) = $parts;
     $user = getUserData($uid);
-    if (!$user) {
-        sendResponse(401, 'User not found');
-    }
-    // 简单签名：HMAC-SHA256(uid + password_hash, stationID)
+    if (!$user) sendResponse(401, 'User not found');
     $expected = hash_hmac('sha256', $uid . $user['password'], $GLOBALS['stationID']);
-    if (!hash_equals($expected, $signature)) {
-        sendResponse(401, 'Invalid token');
-    }
+    if (!hash_equals($expected, $signature)) sendResponse(401, 'Invalid token');
     return $user;
 }
 
 function sendResponse($code, $message, $data = null) {
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization");
     http_response_code($code);
     echo json_encode(['code' => $code, 'msg' => $message, 'data' => $data]);
     exit;
 }
 
-// 路由
 $action = $_GET['action'] ?? '';
-
 try {
     switch ($action) {
-        case 'register':
-            register();
-            break;
-        case 'login':
-            login();
-            break;
-        case 'upload_avatar':
-            $user = authenticate();
-            uploadAvatar($user);
-            break;
-        case 'add_friend':
-            $user = authenticate();
-            addFriend($user);
-            break;
-        case 'handle_friend_request':
-            $user = authenticate();
-            handleFriendRequest($user);
-            break;
-        case 'send_message':
-            $user = authenticate();
-            sendMessage($user);
-            break;
-        case 'get_messages':
-            $user = authenticate();
-            getMessages($user);
-            break;
-        case 'delete_account':
-            $user = authenticate();
-            deleteAccount($user);
-            break;
-
-case 'get_station_version':
-    getStationVersion();
-    break;
-
-case 'get_server_type':
-    getServerType();
-    break;
-
-case 'get_verify_setting':
-    $user = authenticate();
-    getVerifySetting($user);
-    break;
-
-case 'set_verify_setting':
-    $user = authenticate();
-    setVerifySetting($user);
-    break;
-
-case 'get_friend_requests':
-    $user = authenticate();
-    getFriendRequests($user);
-    break;
-
-case 'accept_friend_request':
-    $user = authenticate();
-    acceptFriendRequest($user);
-    break;
-
-case 'get_avatar':
-    $uid = $_GET['uid'] ?? '';
-    if (empty($uid)) {
-        sendResponse(400, 'Missing user ID');
-    }
-    // 添加 CORS 头部，确保头像可以被跨域读取
-    header("Access-Control-Allow-Origin: *");
-    header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization");
-    
-    // 查找用户头像文件
-    $avatarPattern = AVATAR_DIR . '/' . $uid . '.*';
-    $files = glob($avatarPattern);
-    if (empty($files)) {
-        // 无头像则返回 404
-        http_response_code(404);
-        exit;
-    }
-    $avatarFile = $files[0];
-    $mime = mime_content_type($avatarFile);
-    header('Content-Type: ' . $mime);
-    readfile($avatarFile);
-    exit;
-    break;
-
-case 'get_friends':
-    $user = authenticate();
-    $friends = [];
-    foreach ($user['friends'] as $friendUid) {
-        $friendData = getUserData($friendUid);
-        if ($friendData) {
-            $friends[] = [
-                'uid' => $friendData['id'],
-                'username' => $friendData['username'],
-                'avatar' => $friendData['avatar'],
-                'registered_at' => $friendData['registered_at'],
-                'station_id' => $friendData['station_id'],
-            ];
-        }
-    }
-    sendResponse(200, 'Friends list retrieved', $friends);
-    break;
-
-case 'get_user_info':
-    $input = json_decode(file_get_contents('php://input'), true);
-    $uid = $input['uid'] ?? $_GET['uid'] ?? null;
-    if (!$uid) {
-        sendResponse(400, 'Missing user ID');
-    }
-    $user = null;
-    // 根据uid查找
-    $files = glob(USER_DIR . '/user_*.json');
-    foreach ($files as $file) {
-        $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        foreach ($lines as $line) {
-            $u = json_decode($line, true);
-            if ($u && $u['id'] === $uid && (!isset($u['deleted']) || $u['deleted'] !== true)) {
-                $user = $u;
-                break 2;
-            }
-        }
-    }
-    if (!$user) {
-        sendResponse(404, 'User not found');
-    }
-    $publicInfo = [
-        'uid' => $user['id'],
-        'username' => $user['username'],
-        'avatar' => $user['avatar'],
-        'registered_at' => $user['registered_at'],
-        'station_id' => $user['station_id'],
-        'friend_verify' => $user['friend_verify'],
-    ];
-    sendResponse(200, 'User info retrieved', $publicInfo);
-    break;
-
-case 'get_station_id':
-    sendResponse(200, 'Station ID retrieved', ['station_id' => $stationID]);
-    break;
-
-        default:
-            sendResponse(400, 'Invalid action');
+        case 'register': register(); break;
+        case 'login': login(); break;
+        case 'upload_avatar': $user = authenticate(); uploadAvatar($user); break;
+        case 'add_friend': $user = authenticate(); addFriend($user); break;
+        case 'handle_friend_request': $user = authenticate(); handleFriendRequest($user); break;
+        case 'send_message': $user = authenticate(); sendMessage($user); break;
+        case 'get_messages': $user = authenticate(); getMessages($user); break;
+        case 'delete_account': $user = authenticate(); deleteAccount($user); break;
+        case 'get_station_version': getStationVersion(); break;
+        case 'get_server_type': getServerType(); break;
+        case 'get_verify_setting': $user = authenticate(); getVerifySetting($user); break;
+        case 'set_verify_setting': $user = authenticate(); setVerifySetting($user); break;
+        case 'get_friend_requests': $user = authenticate(); getFriendRequests($user); break;
+        case 'accept_friend_request': $user = authenticate(); acceptFriendRequest($user); break;
+        case 'get_avatar': getAvatar(); break;
+        case 'get_friends': $user = authenticate(); getFriends($user); break;
+        case 'get_user_info': getUserInfo(); break;
+        case 'get_station_id': sendResponse(200, 'Station ID retrieved', ['station_id' => $GLOBALS['stationID']]); break;
+        default: sendResponse(400, 'Invalid action');
     }
 } catch (Exception $e) {
     sendResponse(500, 'Server error: ' . $e->getMessage());
 }
 
-// 注册
+// ---------------------- 功能实现 ----------------------
 function register() {
-    global $stationID;
+    global $stationID, $usernameMapFile;
     $input = json_decode(file_get_contents('php://input'), true);
     $username = trim($input['username'] ?? '');
     $password = $input['password'] ?? '';
+    if (empty($username) || empty($password)) sendResponse(400, 'Username and password required');
+    if (strlen($username) > 12) sendResponse(400, 'Username too long (max 12)');
 
-    if (empty($username) || empty($password)) {
-        sendResponse(400, 'Username and password required');
+    // 检查用户名唯一性（使用映射文件加锁）
+    $mapFp = fopen($usernameMapFile, 'c+');
+    if (!$mapFp) sendResponse(500, 'System error');
+    if (!flock($mapFp, LOCK_EX)) sendResponse(500, 'System busy');
+    
+    // 从当前句柄读取完整映射
+    $content = '';
+    while (!feof($mapFp)) $content .= fread($mapFp, 8192);
+    $map = json_decode($content, true);
+    if (!is_array($map)) $map = [];
+    
+    if (isset($map[$username])) {
+        flock($mapFp, LOCK_UN); fclose($mapFp);
+        sendResponse(409, 'Username already exists');
     }
-    if (strlen($username) > 12) {
-        sendResponse(400, 'Username too long (max 12 characters)');
-    }
-
-    // 检查用户名唯一性
-    $files = glob(USER_DIR . '/user_*.json');
+    // 二次确认（扫描用户文件，防止缓存不一致）
+    $files = glob(USER_DIR . '/*.json');
     foreach ($files as $file) {
-        $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        foreach ($lines as $line) {
-            $user = json_decode($line, true);
-            if ($user && $user['username'] === $username && (!isset($user['deleted']) || $user['deleted'] !== true)) {
-                sendResponse(409, 'Username already exists');
-            }
+        $data = file_get_contents($file);
+        $u = json_decode($data, true);
+        if ($u && $u['username'] === $username && empty($u['deleted'])) {
+            flock($mapFp, LOCK_UN); fclose($mapFp);
+            sendResponse(409, 'Username already exists');
         }
     }
 
@@ -373,72 +246,64 @@ function register() {
     $passwordHash = password_hash($password, PASSWORD_DEFAULT);
     $now = time();
     $user = [
-        'id' => $uid,
-        'username' => $username,
-        'password' => $passwordHash,
-        'friend_verify' => 'need_verify', // allow_all, need_verify, deny_all
-        'registered_at' => $now,
-        'station_id' => $stationID,
-        'friend_requests' => [], // 请求列表: [{'from_uid': 'xxx', 'time': timestamp, 'status': 'pending'}, ...]
-        'friends' => [],
-        'message_count' => 0,
-        'avatar' => null,
-        'deleted' => false,
+        'id' => $uid, 'username' => $username, 'password' => $passwordHash,
+        'friend_verify' => 'need_verify', 'registered_at' => $now, 'station_id' => $stationID,
+        'friend_requests' => [], 'friends' => [], 'message_count' => 0, 'avatar' => null, 'deleted' => false,
     ];
+    if (!saveUserData($user)) {
+        flock($mapFp, LOCK_UN); fclose($mapFp);
+        sendResponse(500, 'Failed to save user');
+    }
+    $map[$username] = $uid;
+    // 写回映射文件
+    ftruncate($mapFp, 0);
+    rewind($mapFp);
+    fwrite($mapFp, json_encode($map));
+    fflush($mapFp);
+    flock($mapFp, LOCK_UN);
+    fclose($mapFp);
 
-    saveUserData($user);
-
-    // 生成token
     $token = $uid . ':' . hash_hmac('sha256', $uid . $passwordHash, $stationID);
     sendResponse(200, 'Registered successfully', ['uid' => $uid, 'token' => $token]);
 }
 
-// 登录
 function login() {
     global $stationID;
     $input = json_decode(file_get_contents('php://input'), true);
     $username = trim($input['username'] ?? '');
     $password = $input['password'] ?? '';
+    if (empty($username) || empty($password)) sendResponse(400, 'Username and password required');
 
-    if (empty($username) || empty($password)) {
-        sendResponse(400, 'Username and password required');
-    }
-
-    $files = glob(USER_DIR . '/user_*.json');
-    $foundUser = null;
-    foreach ($files as $file) {
-        $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        foreach ($lines as $line) {
-            $user = json_decode($line, true);
-            if ($user && $user['username'] === $username && (!isset($user['deleted']) || $user['deleted'] !== true)) {
-                $foundUser = $user;
-                break 2;
-            }
-        }
-    }
-
-    if (!$foundUser || !password_verify($password, $foundUser['password'])) {
+    $uid = getUidByUsername($username);
+    if (!$uid) sendResponse(401, 'Invalid username or password');
+    $user = getUserData($uid);
+    if (!$user || !password_verify($password, $user['password'])) {
         sendResponse(401, 'Invalid username or password');
     }
-
-    $token = $foundUser['id'] . ':' . hash_hmac('sha256', $foundUser['id'] . $foundUser['password'], $stationID);
-    sendResponse(200, 'Login successful', ['uid' => $foundUser['id'], 'token' => $token]);
+    $token = $user['id'] . ':' . hash_hmac('sha256', $user['id'] . $user['password'], $stationID);
+    sendResponse(200, 'Login successful', ['uid' => $user['id'], 'token' => $token]);
 }
 
-// 上传头像
 function uploadAvatar($user) {
     if (!isset($_FILES['avatar']) || $_FILES['avatar']['error'] !== UPLOAD_ERR_OK) {
         sendResponse(400, 'Avatar file required');
     }
     $file = $_FILES['avatar'];
-    $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
-    if (!in_array(strtolower($ext), ['jpg', 'jpeg', 'png', 'gif'])) {
-        sendResponse(400, 'Invalid image format');
-    }
-    $maxSize = 2 * 1024 * 1024; // 2MB
-    if ($file['size'] > $maxSize) {
-        sendResponse(400, 'File too large (max 2MB)');
-    }
+    if ($file['size'] > MAX_AVATAR_SIZE) sendResponse(400, 'File too large (max 2MB)');
+
+    $finfo = finfo_open(FILEINFO_MIME_TYPE);
+    $mime = finfo_file($finfo, $file['tmp_name']);
+    finfo_close($finfo);
+    $allowedMimes = ['image/jpeg', 'image/png', 'image/gif'];
+    if (!in_array($mime, $allowedMimes)) sendResponse(400, 'Invalid image type');
+
+    $ext = '';
+    if ($mime === 'image/jpeg') $ext = 'jpg';
+    elseif ($mime === 'image/png') $ext = 'png';
+    elseif ($mime === 'image/gif') $ext = 'gif';
+    if (!$ext) sendResponse(400, 'Unsupported image format');
+
+    foreach (glob(AVATAR_DIR . '/' . $user['id'] . '.*') as $old) unlink($old);
     $avatarPath = AVATAR_DIR . '/' . $user['id'] . '.' . $ext;
     if (move_uploaded_file($file['tmp_name'], $avatarPath)) {
         updateUserData($user['id'], function($u) use ($avatarPath) {
@@ -451,353 +316,297 @@ function uploadAvatar($user) {
     }
 }
 
-// 添加好友
 function addFriend($user) {
     $input = json_decode(file_get_contents('php://input'), true);
-    $targetUsername = trim($input['username'] ?? '');
-    if (empty($targetUsername)) {
-        sendResponse(400, 'Target username required');
-    }
+    $targetName = trim($input['username'] ?? '');
+    if (empty($targetName)) sendResponse(400, 'Target username or UID required');
 
-// 查找目标用户：先按用户名查找，如果找不到再按 uid 查找
-$targetUser = null;
-$files = glob(USER_DIR . '/user_*.json');
-foreach ($files as $file) {
-    $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    foreach ($lines as $line) {
-        $u = json_decode($line, true);
-        if ($u && (!isset($u['deleted']) || $u['deleted'] !== true)) {
-            if ($u['username'] === $targetUsername || $u['id'] === $targetUsername) {
-                $targetUser = $u;
-                break 2;
-            }
-        }
-    }
-}
+    $targetUser = getUserData($targetName);
     if (!$targetUser) {
-        sendResponse(404, 'User not found');
+        $targetUid = getUidByUsername($targetName);
+        if ($targetUid) $targetUser = getUserData($targetUid);
     }
-    if ($targetUser['id'] === $user['id']) {
-        sendResponse(400, 'Cannot add yourself');
-    }
+    if (!$targetUser || !empty($targetUser['deleted'])) sendResponse(404, 'User not found');
+    if ($targetUser['id'] === $user['id']) sendResponse(400, 'Cannot add yourself');
+    if (in_array($targetUser['id'], $user['friends'])) sendResponse(400, 'Already friends');
 
-    // 检查是否已经是好友
-    if (in_array($targetUser['id'], $user['friends'])) {
-        sendResponse(400, 'Already friends');
-    }
-
-    // 检查验证方式
-$verify = $targetUser['friend_verify'];
-if ($verify === 'deny_all') {
-    sendResponse(403, 'User does not accept friend requests');
-} elseif ($verify === 'need_verify') {
-    // 发送好友申请
-    $request = [
-        'from_uid' => $user['id'],
-        'time' => time(),
-        'status' => 'pending'
-    ];
-    updateUserData($targetUser['id'], function($u) use ($request) {
-        foreach ($u['friend_requests'] as $r) {
-            if ($r['from_uid'] === $request['from_uid'] && $r['status'] === 'pending') {
-                return $u;
+    $verify = $targetUser['friend_verify'];
+    if ($verify === 'deny_all') sendResponse(403, 'User does not accept friend requests');
+    elseif ($verify === 'need_verify') {
+        $hasPending = false;
+        foreach ($targetUser['friend_requests'] as $req) {
+            if ($req['from_uid'] === $user['id'] && $req['status'] === 'pending') {
+                $hasPending = true;
+                break;
             }
         }
-        $u['friend_requests'][] = $request;
-        return $u;
-    });
-    sendResponse(200, 'Friend request sent');
-} else { // allow_all
-    // 直接添加好友
-    updateUserData($user['id'], function($u) use ($targetUser) {
-        $u['friends'][] = $targetUser['id'];
-        return $u;
-    });
-    updateUserData($targetUser['id'], function($u) use ($user) {
-        $u['friends'][] = $user['id'];
-        return $u;
-    });
-    sendResponse(200, 'Friend added');
-}
+        if ($hasPending) sendResponse(409, 'Friend request already sent');
+        $request = ['from_uid' => $user['id'], 'time' => time(), 'status' => 'pending'];
+        updateUserData($targetUser['id'], function($u) use ($request) {
+            $u['friend_requests'][] = $request;
+            return $u;
+        });
+        sendResponse(200, 'Friend request sent');
+    } else {
+        updateUserData($user['id'], function($u) use ($targetUser) {
+            if (!in_array($targetUser['id'], $u['friends'])) $u['friends'][] = $targetUser['id'];
+            return $u;
+        });
+        updateUserData($targetUser['id'], function($u) use ($user) {
+            if (!in_array($user['id'], $u['friends'])) $u['friends'][] = $user['id'];
+            return $u;
+        });
+        sendResponse(200, 'Friend added');
+    }
 }
 
-// 处理好友申请（接受/拒绝）
 function handleFriendRequest($user) {
     $input = json_decode(file_get_contents('php://input'), true);
     $fromUid = $input['from_uid'] ?? '';
-    $action = $input['action'] ?? ''; // accept, reject
-    if (empty($fromUid) || !in_array($action, ['accept', 'reject'])) {
-        sendResponse(400, 'Invalid parameters');
-    }
+    $action = $input['action'] ?? '';
+    if (empty($fromUid) || !in_array($action, ['accept', 'reject'])) sendResponse(400, 'Invalid parameters');
 
     $updated = false;
     updateUserData($user['id'], function($u) use ($fromUid, $action, &$updated) {
         foreach ($u['friend_requests'] as &$req) {
             if ($req['from_uid'] === $fromUid && $req['status'] === 'pending') {
-                if ($action === 'accept') {
-                    $req['status'] = 'accepted';
-                    $updated = true;
-                } else {
-                    $req['status'] = 'rejected';
-                }
+                $req['status'] = $action === 'accept' ? 'accepted' : 'rejected';
+                $updated = true;
                 break;
             }
         }
         return $u;
     });
-
-    if ($updated && $action === 'accept') {
-        // 双方加为好友
+    if (!$updated) sendResponse(404, 'Request not found');
+    if ($action === 'accept') {
+        $targetUser = getUserData($fromUid);
+        if (!$targetUser || !empty($targetUser['deleted'])) sendResponse(404, 'Target user no longer exists');
         updateUserData($user['id'], function($u) use ($fromUid) {
-            if (!in_array($fromUid, $u['friends'])) {
-                $u['friends'][] = $fromUid;
-            }
+            if (!in_array($fromUid, $u['friends'])) $u['friends'][] = $fromUid;
             return $u;
         });
         updateUserData($fromUid, function($u) use ($user) {
-            if (!in_array($user['id'], $u['friends'])) {
-                $u['friends'][] = $user['id'];
-            }
+            if (!in_array($user['id'], $u['friends'])) $u['friends'][] = $user['id'];
             return $u;
         });
         sendResponse(200, 'Friend request accepted');
-    } elseif ($updated) {
-        sendResponse(200, 'Friend request rejected');
     } else {
-        sendResponse(404, 'Request not found');
+        sendResponse(200, 'Friend request rejected');
     }
 }
 
-// 发送消息
-// 发送消息
 function sendMessage($user) {
     $input = json_decode(file_get_contents('php://input'), true);
     $toUid = $input['to_uid'] ?? '';
     $content = trim($input['content'] ?? '');
-    if (empty($toUid) || empty($content)) {
-        sendResponse(400, 'Missing parameters');
-    }
+    if (empty($toUid) || empty($content)) sendResponse(400, 'Missing parameters');
+    if (mb_strlen($content, 'UTF-8') > MAX_MESSAGE_LEN) sendResponse(400, 'Message too long (max 1500 characters)');
 
-    // 检查是否好友
     $targetUser = getUserData($toUid);
-    if (!$targetUser) {
-        sendResponse(404, 'Target user not found');
-    }
+    if (!$targetUser || !empty($targetUser['deleted'])) sendResponse(404, 'Target user not found');
     if (!in_array($toUid, $user['friends']) || !in_array($user['id'], $targetUser['friends'])) {
         sendResponse(403, 'Not friends');
     }
 
-    $message = [
-        'from' => $user['id'],
-        'to' => $toUid,
-        'content' => $content,
-        'time' => time()
-    ];
-
-    // 保存到发送者目录
+    $message = ['from' => $user['id'], 'to' => $toUid, 'content' => $content, 'time' => time()];
     $senderDir = CHAT_DIR . '/' . $user['id'];
     if (!file_exists($senderDir)) mkdir($senderDir, 0755, true);
-    $senderFile = $senderDir . '/' . $toUid . '.json';
-    appendMessageToFile($senderFile, $message);
-
-    // 保存到接收者目录
     $receiverDir = CHAT_DIR . '/' . $toUid;
     if (!file_exists($receiverDir)) mkdir($receiverDir, 0755, true);
-    $receiverFile = $receiverDir . '/' . $user['id'] . '.json';
-    appendMessageToFile($receiverFile, $message);
+    appendMessageToFile($senderDir . '/' . $toUid . '.json', $message);
+    appendMessageToFile($receiverDir . '/' . $user['id'] . '.json', $message);
 
-    // 更新用户消息计数
     updateUserData($user['id'], function($u) {
         $u['message_count']++;
         return $u;
     });
-
     sendResponse(200, 'Message sent');
 }
 
-// 辅助函数：将消息追加到聊天文件，并清理过期消息
 function appendMessageToFile($filePath, $message) {
-    $messages = [];
-    if (file_exists($filePath)) {
-        $lines = file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        foreach ($lines as $line) {
-            $messages[] = json_decode($line, true);
-        }
-    }
-    $messages[] = $message;
-
-    // 清理过期消息
-    $cutoff = time() - ($GLOBALS['daysToKeep'] * 86400);
-    $messages = array_filter($messages, function($msg) use ($cutoff) {
-        return $msg['time'] >= $cutoff;
-    });
-
-    // 写回文件
-    $fp = fopen($filePath, 'w');
+    global $daysToKeep;
+    $fp = fopen($filePath, 'a+');
     if (flock($fp, LOCK_EX)) {
+        rewind($fp);
+        $messages = [];
+        while (($line = fgets($fp)) !== false) {
+            $line = trim($line);
+            if ($line) {
+                $msg = json_decode($line, true);
+                if (is_array($msg) && isset($msg['time'])) {
+                    $messages[] = $msg;
+                }
+            }
+        }
+        $messages[] = $message;
+        $cutoff = time() - ($daysToKeep * 86400);
+        
+        // 已修复：兼容所有PHP版本，无语法错误
+        $messages = array_filter($messages, function($msg) use ($cutoff) {
+            return $msg['time'] >= $cutoff;
+        });
+        
+        ftruncate($fp, 0);
+        rewind($fp);
         foreach ($messages as $msg) {
             fwrite($fp, json_encode($msg) . "\n");
         }
+        fflush($fp);
         flock($fp, LOCK_UN);
     }
     fclose($fp);
 }
 
-// 获取消息（与特定好友的聊天记录）
 function getMessages($user) {
     $friendUid = $_GET['friend_uid'] ?? '';
-    if (empty($friendUid)) {
-        sendResponse(400, 'Friend UID required');
-    }
-
-    // 检查是否好友
-    if (!in_array($friendUid, $user['friends'])) {
-        sendResponse(403, 'Not friends');
-    }
+    if (empty($friendUid)) sendResponse(400, 'Friend UID required');
+    if (!in_array($friendUid, $user['friends'])) sendResponse(403, 'Not friends');
 
     $chatFile = CHAT_DIR . '/' . $user['id'] . '/' . $friendUid . '.json';
-    if (!file_exists($chatFile)) {
-        sendResponse(200, 'No messages', []);
-    }
-
+    if (!file_exists($chatFile)) sendResponse(200, 'No messages', []);
     $lines = file($chatFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    $messages = array_map(function($line) {
-        return json_decode($line, true);
-    }, $lines);
-
-    // 可选：按时间排序
-    usort($messages, function($a, $b) {
-        return $a['time'] - $b['time'];
-    });
-
+    $messages = array_map('json_decode', $lines, array_fill(0, count($lines), true));
+    usort($messages, function($a, $b) { return $a['time'] - $b['time']; });
     sendResponse(200, 'Messages retrieved', $messages);
 }
 
-// 注销账号
 function deleteAccount($user) {
     global $completelyDelete;
     if ($completelyDelete) {
-        // 完全删除：从用户文件中移除
-        $file = getUserFileByID($user['id']);
-        if ($file) {
-            $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-            $newLines = [];
-            foreach ($lines as $line) {
-                $u = json_decode($line, true);
-                if ($u && $u['id'] !== $user['id']) {
-                    $newLines[] = $line;
-                }
-            }
-            file_put_contents($file, implode("\n", $newLines) . "\n");
-        }
-        // 从索引中移除
-        $index = json_decode(file_get_contents($GLOBALS['userIndexFile']), true);
-        unset($index[$user['id']]);
-        file_put_contents($GLOBALS['userIndexFile'], json_encode($index));
-        // 可选：删除头像和聊天记录
-        @unlink(AVATAR_DIR . '/' . $user['id'] . '.*');
+        $userFile = USER_DIR . '/' . $user['id'] . '.json';
+        if (file_exists($userFile)) unlink($userFile);
+        updateUsernameMap($user['username'], null);
+        foreach (glob(AVATAR_DIR . '/' . $user['id'] . '.*') as $f) unlink($f);
         $chatDir = CHAT_DIR . '/' . $user['id'];
         if (is_dir($chatDir)) {
-            array_map('unlink', glob($chatDir . '/*.json'));
+            foreach (glob($chatDir . '/*.json') as $f) unlink($f);
             rmdir($chatDir);
         }
+        foreach ($user['friends'] as $friendUid) {
+            updateUserData($friendUid, function($u) use ($user) {
+                $u['friends'] = array_values(array_filter($u['friends'], function($id) use ($user) { return $id !== $user['id']; }));
+                return $u;
+            });
+        }
     } else {
-        // 软删除：标记为deleted
-        updateUserData($user['id'], function($u) {
-            $u['deleted'] = true;
-            return $u;
-        });
+        updateUserData($user['id'], function($u) { $u['deleted'] = true; return $u; });
+        updateUsernameMap($user['username'], null);
+        foreach ($user['friends'] as $friendUid) {
+            updateUserData($friendUid, function($u) use ($user) {
+                $u['friends'] = array_values(array_filter($u['friends'], function($id) use ($user) { return $id !== $user['id']; }));
+                return $u;
+            });
+        }
     }
     sendResponse(200, 'Account deleted');
 }
 
-// 获取当前用户的验证方式
-function getVerifySetting($user) {
-    sendResponse(200, 'Verify setting retrieved', ['mode' => $user['friend_verify']]);
-}
-
-// 设置验证方式
+function getStationVersion() { sendResponse(200, 'OK', ['version' => STATION_VERSION]); }
+function getServerType() { sendResponse(200, 'OK', ['type' => SERVER_TYPE]); }
+function getVerifySetting($user) { sendResponse(200, 'OK', ['mode' => $user['friend_verify']]); }
 function setVerifySetting($user) {
     $input = json_decode(file_get_contents('php://input'), true);
     $mode = $input['mode'] ?? '';
-    if (!in_array($mode, ['allow_all', 'need_verify', 'deny_all'])) {
-        sendResponse(400, 'Invalid mode');
-    }
-    updateUserData($user['id'], function($u) use ($mode) {
-        $u['friend_verify'] = $mode;
-        return $u;
-    });
+    if (!in_array($mode, ['allow_all','need_verify','deny_all'])) sendResponse(400, 'Invalid mode');
+    updateUserData($user['id'], function($u) use ($mode) { $u['friend_verify'] = $mode; return $u; });
     sendResponse(200, 'Verify setting updated');
 }
-
-// 获取待处理的好友申请列表
 function getFriendRequests($user) {
-    $pendingRequests = array_filter($user['friend_requests'], function($req) {
-        return $req['status'] === 'pending';
-    });
+    $pending = array_filter($user['friend_requests'], function($r) { return $r['status'] === 'pending'; });
     $result = [];
-    foreach ($pendingRequests as $req) {
-        $fromUser = getUserData($req['from_uid']);
-        if ($fromUser) {
+    foreach ($pending as $req) {
+        $from = getUserData($req['from_uid']);
+        if ($from && empty($from['deleted'])) {
             $result[] = [
-                'id' => $req['from_uid'],          // 用 from_uid 作为请求唯一标识
+                'id' => $req['from_uid'],
                 'from_uid' => $req['from_uid'],
-                'from_username' => $fromUser['username'],
+                'from_username' => $from['username'],
                 'message' => '申请添加您为好友',
                 'time' => $req['time']
             ];
         }
     }
-    sendResponse(200, 'Friend requests retrieved', $result);
+    sendResponse(200, 'OK', $result);
 }
-
-// 接受好友申请（前端会传入 request_id，即 from_uid）
 function acceptFriendRequest($user) {
     $input = json_decode(file_get_contents('php://input'), true);
     $requestId = $input['request_id'] ?? '';
-    if (empty($requestId)) {
-        sendResponse(400, 'Missing request_id');
-    }
+    if (empty($requestId)) sendResponse(400, 'Missing request_id');
 
-    // 查找申请并更新状态
-    $requestFound = false;
-    updateUserData($user['id'], function($u) use ($requestId, &$requestFound) {
+    $found = false;
+    updateUserData($user['id'], function($u) use ($requestId, &$found) {
         foreach ($u['friend_requests'] as &$req) {
             if ($req['from_uid'] === $requestId && $req['status'] === 'pending') {
                 $req['status'] = 'accepted';
-                $requestFound = true;
+                $found = true;
                 break;
             }
         }
         return $u;
     });
+    if (!$found) sendResponse(404, 'Request not found');
 
-    if (!$requestFound) {
-        sendResponse(404, 'Request not found');
-    }
+    $target = getUserData($requestId);
+    if (!$target || !empty($target['deleted'])) sendResponse(404, 'Target user no longer exists');
 
-    // 双方加为好友
     updateUserData($user['id'], function($u) use ($requestId) {
-        if (!in_array($requestId, $u['friends'])) {
-            $u['friends'][] = $requestId;
-        }
+        if (!in_array($requestId, $u['friends'])) $u['friends'][] = $requestId;
         return $u;
     });
     updateUserData($requestId, function($u) use ($user) {
-        if (!in_array($user['id'], $u['friends'])) {
-            $u['friends'][] = $user['id'];
-        }
+        if (!in_array($user['id'], $u['friends'])) $u['friends'][] = $user['id'];
         return $u;
     });
 
+    updateUserData($user['id'], function($u) use ($requestId) {
+        $u['friend_requests'] = array_values(array_filter($u['friend_requests'], function($r) use ($requestId) {
+            return !($r['from_uid'] === $requestId && $r['status'] === 'accepted');
+        }));
+        return $u;
+    });
     sendResponse(200, 'Friend request accepted');
 }
-
-function getStationVersion() {
-    sendResponse(200, 'Station version retrieved', ['version' => STATION_VERSION]);
+function getAvatar() {
+    $uid = $_GET['uid'] ?? '';
+    if (empty($uid)) sendResponse(400, 'Missing user ID');
+    header("Access-Control-Allow-Origin: *");
+    $pattern = AVATAR_DIR . '/' . $uid . '.*';
+    $files = glob($pattern);
+    if (empty($files)) { http_response_code(404); exit; }
+    $avatarFile = $files[0];
+    $mime = mime_content_type($avatarFile);
+    header('Content-Type: ' . $mime);
+    readfile($avatarFile);
+    exit;
 }
+function getFriends($user) {
+    $friends = [];
+    foreach ($user['friends'] as $friendUid) {
+        $f = getUserData($friendUid);
+        if ($f && empty($f['deleted'])) {
+            $friends[] = [
+                'uid' => $f['id'], 'username' => $f['username'], 'avatar' => $f['avatar'],
+                'registered_at' => $f['registered_at'], 'station_id' => $f['station_id']
+            ];
+        }
+    }
+    sendResponse(200, 'Friends list retrieved', $friends);
+}
+function getUserInfo() {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $uidOrName = $input['uid'] ?? $_GET['uid'] ?? null;
+    if (!$uidOrName) sendResponse(400, 'Missing user ID or username');
 
-function getServerType() {
-    sendResponse(200, 'Server type retrieved', ['type' => SERVER_TYPE]);
+    $user = getUserData($uidOrName);
+    if (!$user) {
+        $uid = getUidByUsername($uidOrName);
+        if ($uid) $user = getUserData($uid);
+    }
+    if (!$user || !empty($user['deleted'])) sendResponse(404, 'User not found');
+    sendResponse(200, 'User info retrieved', [
+        'uid' => $user['id'], 'username' => $user['username'], 'avatar' => $user['avatar'],
+        'registered_at' => $user['registered_at'], 'station_id' => $user['station_id'],
+        'friend_verify' => $user['friend_verify'], 'message_count' => $user['message_count'] ?? 0
+    ]);
 }
 ?>

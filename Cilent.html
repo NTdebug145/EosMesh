@@ -13,15 +13,14 @@
     <script src="https://unpkg.com/@mui/material@5.15.0/umd/material-ui.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
-        /* 样式保持不变，此处省略以节省篇幅，请复制原文件中的样式 */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 3px; }
         ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 3px; }
-        .message-bubble { max-width: 70%; word-wrap: break-word; border-radius: 18px; padding: 8px 12px; margin: 4px 0; }
+        .message-bubble { max-width: 70%; word-wrap: break-word; border-radius: 18px; padding: 8px 12px; margin: 4px 0; word-break: break-all; white-space: pre-wrap; }
         .message-mine { background-color: #1976d2; color: white; align-self: flex-end; border-bottom-right-radius: 4px; }
         .message-other { background-color: #e0e0e0; color: #000; align-self: flex-start; border-bottom-left-radius: 4px; }
         .message-time { font-size: 0.7rem; margin-top: 2px; color: #888; }
-        .chat-messages { display: flex; flex-direction: column; overflow-y: auto; flex: 1; padding: 16px; position: relative; }
+        .chat-messages { display: flex; flex-direction: column; overflow-y: auto; flex: 1; padding: 16px; position: relative; min-width: 0; max-width: 100%; box-sizing: border-box; }
         body { margin: 0; background-color: #f5f5f5; }
         .search-result { display: flex; align-items: center; padding: 8px; margin-top: 8px; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; }
         .search-result:hover { background-color: #f5f5f5; }
@@ -67,9 +66,15 @@
     function getAuth() { return { uid: localStorage.getItem('eos_uid'), token: localStorage.getItem('eos_token') }; }
     function clearAuth() { localStorage.removeItem('eos_uid'); localStorage.removeItem('eos_token'); }
     function formatTime(timestamp) { const d = new Date(timestamp * 1000); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; }
-    function getAvatarUrl(uid, version = null) { const base = getApiBase(); if (!base) return ''; let url = `${base}?action=get_avatar&uid=${encodeURIComponent(uid)}`; if (version) url += `&v=${version}`; return url; }
+    function getAvatarUrl(uid, version = null) { 
+        const base = getApiBase(); 
+        if (!base) return ''; 
+        let url = `${base}${base.includes('?') ? '&' : '?'}action=get_avatar&uid=${encodeURIComponent(uid)}`; 
+        if (version) url += `&v=${version}`; 
+        return url; 
+    }
 
-    // ==================== AboutPage（支持版本+服务器类型）====================
+    // ==================== AboutPage ====================
     function AboutPage() {
         const [showGithub, setShowGithub] = React.useState(false);
         const [serverInfo, setServerInfo] = React.useState({ version: null, type: null });
@@ -254,20 +259,44 @@
         const [showAbout, setShowAbout] = React.useState(false);
         const [showMessagesPage, setShowMessagesPage] = React.useState(false);
         const [messagesPageTab, setMessagesPageTab] = React.useState(0);
+        const [showUserProfile, setShowUserProfile] = React.useState(false);
+        const [showFriendList, setShowFriendList] = React.useState(false);
+        const [fullUserInfo, setFullUserInfo] = React.useState(null);
+        
         const messagesRef = React.useRef([]);
         const chatContainerRef = React.useRef(null);
         const [shouldAutoScroll, setShouldAutoScroll] = React.useState(true);
         const myAvatarUrl = React.useMemo(()=>getAvatarUrl(uid, avatarVersion), [uid, avatarVersion]);
         const handleScroll = React.useCallback(() => { if(chatContainerRef.current){ const {scrollTop,scrollHeight,clientHeight}=chatContainerRef.current; setShouldAutoScroll(scrollHeight-scrollTop-clientHeight<50); } }, []);
         React.useEffect(() => { if(shouldAutoScroll && chatContainerRef.current) chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight; }, [messages, shouldAutoScroll]);
+        const scrollToBottom = React.useCallback(() => {if (chatContainerRef.current) {chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight; setShouldAutoScroll(true);}}, []);
 
-        const fetchUserInfo = React.useCallback(async () => { try { const data = await apiRequest('get_user_info', { method:'POST', body:{ uid } }); setUserInfo({ username: data.data.username, avatar: data.data.avatar }); } catch(e) { console.error(e); } }, [uid]);
+        // 获取当前用户完整信息（用于用户资料页）—— 修复字段映射
+        const fetchFullUserInfo = React.useCallback(async () => {
+            try {
+                const data = await apiRequest('get_user_info', { method:'POST', body:{ uid }, token });
+                // 后端返回字段：registered_at, message_count, station_id
+                setFullUserInfo(data.data);
+            } catch(e) {
+                console.error("获取用户完整信息失败", e);
+                setFullUserInfo(null);
+            }
+        }, [uid, token]);
+
+        const fetchUserInfo = React.useCallback(async () => { 
+            try { 
+                const data = await apiRequest('get_user_info', { method:'POST', body:{ uid }, token }); 
+                setUserInfo({ username: data.data.username, avatar: data.data.avatar }); 
+            } catch(e) { console.error(e); } 
+        }, [uid, token]);
+
         const fetchFriends = React.useCallback(async () => { setLoadingFriends(true); try { const data = await apiRequest('get_friends', { token, method:'GET' }); setFriends(data.data||[]); } catch(err){ setSnackbar({ open:true, message:`加载好友失败: ${err.message}`, severity:'error' }); } finally { setLoadingFriends(false); } }, [token]);
         const fetchMessages = React.useCallback(async (friendUid) => { if(!friendUid) return; setLoadingMessages(true); try { const data = await apiRequest('get_messages', { token, method:'GET', query:{ friend_uid: friendUid } }); const newMessages = data.data||[]; if(JSON.stringify(messagesRef.current)!==JSON.stringify(newMessages)){ setMessages(newMessages); messagesRef.current=newMessages; } } catch(err){ setSnackbar({ open:true, message:`加载消息失败: ${err.message}`, severity:'error' }); } finally { setLoadingMessages(false); } }, [token]);
-        const sendMessage = async () => { if(!selectedFriend || !inputMsg.trim()) return; setSending(true); try { await apiRequest('send_message', { token, body:{ to_uid: selectedFriend.uid, content: inputMsg.trim() } }); setInputMsg(''); await fetchMessages(selectedFriend.uid); } catch(err){ setSnackbar({ open:true, message:`发送失败: ${err.message}`, severity:'error' }); } finally { setSending(false); } };
+        const sendMessage = async () => { if(!selectedFriend || !inputMsg.trim()) return; setSending(true); try { await apiRequest('send_message', { token, body:{ to_uid: selectedFriend.uid, content: inputMsg.trim() } }); setInputMsg(''); await fetchMessages(selectedFriend.uid); scrollToBottom();} catch(err){ setSnackbar({ open:true, message:`发送失败: ${err.message}`, severity:'error' }); } finally { setSending(false); } };
         const handleAvatarUpload = async () => { if(!avatarFile) return; const formData = new FormData(); formData.append('avatar', avatarFile); setUploadingAvatar(true); try { await apiRequest('upload_avatar', { token, method:'POST', body: formData, isFormData:true }); setSnackbar({ open:true, message:'头像上传成功', severity:'success' }); setAvatarUploadOpen(false); setAvatarFile(null); fetchUserInfo(); setAvatarVersion(Date.now()); } catch(err){ setSnackbar({ open:true, message:`上传失败: ${err.message}`, severity:'error' }); } finally { setUploadingAvatar(false); } };
         const handleUpdateApiBase = () => { if(!tempApiBase.trim()){ setSnackbar({ open:true, message:'站点链接不能为空', severity:'error' }); return; } setApiBase(tempApiBase.trim()); clearAuth(); setSettingsOpen(false); onLogout(); setSnackbar({ open:true, message:'站点链接已更改，请重新登录', severity:'info' }); };
         const handleLogout = () => { clearAuth(); onLogout(); };
+        
         React.useEffect(() => { fetchUserInfo(); fetchFriends(); }, [fetchUserInfo, fetchFriends]);
         React.useEffect(() => { if(selectedFriend) fetchMessages(selectedFriend.uid); }, [selectedFriend, fetchMessages]);
         React.useEffect(() => { const interval = setInterval(() => { if(selectedFriend) fetchMessages(selectedFriend.uid); fetchFriends(); }, 5000); return ()=>clearInterval(interval); }, [selectedFriend, fetchMessages, fetchFriends]);
@@ -276,11 +305,11 @@
             const timer = setTimeout(() => {
                 if(newFriendName.trim() && /^[A-Z0-9]{32}$/.test(newFriendName.trim())){
                     setSearching(true);
-                    apiRequest('get_user_info', { method:'POST', body:{ uid: newFriendName.trim() } }).then(res=>setSearchResult(res.data)).catch(()=>setSearchResult(null)).finally(()=>setSearching(false));
+                    apiRequest('get_user_info', { method:'POST', body:{ uid: newFriendName.trim() }, token }).then(res=>setSearchResult(res.data)).catch(()=>setSearchResult(null)).finally(()=>setSearching(false));
                 } else setSearchResult(null);
             }, 500);
             return ()=>clearTimeout(timer);
-        }, [newFriendName]);
+        }, [newFriendName, token]);
 
         const handleConfirmAdd = () => {
             if(!pendingFriend) return;
@@ -293,15 +322,32 @@
             }).catch(err => { setSnackbar({ open:true, message:`添加失败: ${err.message}`, severity:'error' }); }).finally(() => { setAddingFriend(false); setConfirmAddOpen(false); setPendingFriend(null); });
         };
 
+        React.useEffect(() => {
+            if (showUserProfile) {
+                fetchFullUserInfo();
+            }
+        }, [showUserProfile, fetchFullUserInfo]);
+
         return (
             <Box sx={{ display:'flex', height:'100vh', flexDirection:'column' }}>
                 <AppBar position="static">
                     <Toolbar>
-                        <IconButton color="inherit" onClick={()=>{ if(showAbout) setShowAbout(false); else if(showMessagesPage) setShowMessagesPage(false); else setDrawerOpen(true); }} edge="start">
-                            <Icon>{(showAbout||showMessagesPage)?'arrow_back':'menu'}</Icon>
+                        <IconButton color="inherit" onClick={()=>{ 
+                            if (showAbout) setShowAbout(false);
+                            else if (showMessagesPage) setShowMessagesPage(false);
+                            else if (showFriendList) {
+                                setShowFriendList(false);
+                                setShowUserProfile(true);
+                            }
+                            else if (showUserProfile) setShowUserProfile(false);
+                            else setDrawerOpen(true);
+                        }} edge="start">
+                            <Icon>{(showAbout || showMessagesPage || showUserProfile || showFriendList) ? 'arrow_back' : 'menu'}</Icon>
                         </IconButton>
-                        <Typography variant="h6" sx={{ flexGrow:1, ml:2 }}>{showAbout?'关于':showMessagesPage?'消息':'EosMesh'}</Typography>
-                        {!showAbout && <Box><IconButton color="inherit" onClick={()=>setAddFriendOpen(true)}><Icon>add</Icon></IconButton><IconButton color="inherit" onClick={()=>{ setTempApiBase(getApiBase()); setSettingsOpen(true); }}><Icon>settings</Icon></IconButton></Box>}
+                        <Typography variant="h6" sx={{ flexGrow:1, ml:2 }}>
+                            {showAbout ? '关于' : showMessagesPage ? '消息' : showUserProfile ? '用户' : showFriendList ? '好友列表' : 'EosMesh'}
+                        </Typography>
+                        {!showAbout && !showUserProfile && !showFriendList && <Box><IconButton color="inherit" onClick={()=>setAddFriendOpen(true)}><Icon>add</Icon></IconButton><IconButton color="inherit" onClick={()=>{ setTempApiBase(getApiBase()); setSettingsOpen(true); }}><Icon>settings</Icon></IconButton></Box>}
                     </Toolbar>
                 </AppBar>
                 <Drawer anchor="left" open={drawerOpen} onClose={()=>setDrawerOpen(false)}>
@@ -312,20 +358,91 @@
                             <IconButton size="small" onClick={()=>{ fetchFriends(); setSnackbar({ open:true, message:'好友列表已刷新', severity:'info' }); }} disabled={loadingFriends}><Icon>refresh</Icon></IconButton>
                         </Box>
                         <List component="nav" sx={{ flexGrow:1 }}>
-                            <ListItem button onClick={()=>{ setShowAbout(true); setDrawerOpen(false); }}><ListItemIcon><Icon>info</Icon></ListItemIcon><ListItemText primary="关于" /></ListItem>
-                            <ListItem button onClick={()=>{ setShowMessagesPage(true); setShowAbout(false); setDrawerOpen(false); }}><ListItemIcon><Icon>message</Icon></ListItemIcon><ListItemText primary="消息" /></ListItem>
-                            <ListItem button onClick={()=>{ setAvatarUploadOpen(true); setDrawerOpen(false); }}><ListItemIcon><Icon>photo_camera</Icon></ListItemIcon><ListItemText primary="上传头像" /></ListItem>
+                            <ListItem button onClick={()=>{ setShowUserProfile(true); setDrawerOpen(false); }}>
+                                <ListItemIcon><Icon>account_circle</Icon></ListItemIcon>
+                                <ListItemText primary="用户" />
+                            </ListItem>
+                            <ListItem button onClick={()=>{ setShowAbout(true); setDrawerOpen(false); }}>
+                                <ListItemIcon><Icon>info</Icon></ListItemIcon>
+                                <ListItemText primary="关于" />
+                            </ListItem>
+                            <ListItem button onClick={()=>{ setShowMessagesPage(true); setShowAbout(false); setDrawerOpen(false); }}>
+                                <ListItemIcon><Icon>message</Icon></ListItemIcon>
+                                <ListItemText primary="消息" />
+                            </ListItem>
+                            <ListItem button onClick={()=>{ setAvatarUploadOpen(true); setDrawerOpen(false); }}>
+                                <ListItemIcon><Icon>photo_camera</Icon></ListItemIcon>
+                                <ListItemText primary="上传头像" />
+                            </ListItem>
                         </List>
                         <Typography variant="body2" color="text.secondary" align="center" sx={{ mt:2 }}>更多功能开发中...</Typography>
                     </Box>
                 </Drawer>
                 <Box sx={{ display:'flex', flex:1, overflow:'hidden' }}>
-                    {showAbout ? <AboutPage /> : showMessagesPage ? <MessagesPage fetchFriends={fetchFriends} tabValue={messagesPageTab} setTabValue={setMessagesPageTab} /> : (
+                    {showAbout ? (
+                        <AboutPage />
+                    ) : showMessagesPage ? (
+                        <MessagesPage fetchFriends={fetchFriends} tabValue={messagesPageTab} setTabValue={setMessagesPageTab} />
+                    ) : showUserProfile ? (
+                        fullUserInfo ? (
+                            // 修复：改为垂直单列布局，左标签右值，避免换行挤压
+                            <Box sx={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', bgcolor:'background.default', p:3, overflow:'auto' }}>
+                                <Avatar src={getAvatarUrl(uid, avatarVersion)} sx={{ width: 120, height: 120, mb: 2 }} />
+                                <Typography variant="h5" gutterBottom>{fullUserInfo.username}</Typography>
+                                <Paper variant="outlined" sx={{ p: 3, width: '100%', maxWidth: 600, overflow: 'hidden' }}>
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                        {/* UID 单独一行，带复制按钮 */}
+                                        <Box sx={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 1 }}>
+                                            <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>UID：</Typography>
+                                            <Box sx={{ flex: 1, wordBreak: 'break-all' }}>
+                                                <Typography variant="body1" component="span" sx={{ color: 'text.primary', mr: 1 }}>{uid}</Typography>
+                                                <Button size="small" variant="text" sx={{ fontSize: '12px', p: '0 6px', minWidth: 'auto', textTransform: 'none', color: '#1976d2' }} onClick={() => { navigator.clipboard.writeText(uid); setSnackbar({ open: true, message: 'UID复制成功', severity: 'success' }); }}>复制</Button>
+                                            </Box>
+                                        </Box>
+                                        {/* 注册时间 */}
+                                        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                                            <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>注册时间：</Typography>
+                                            <Typography variant="body1" sx={{ color: 'text.primary' }}>{fullUserInfo.registered_at ? formatTime(fullUserInfo.registered_at) : '未知'}</Typography>
+                                        </Box>
+                                        {/* 站点ID */}
+                                        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                                            <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>站点ID：</Typography>
+                                            <Typography variant="body1" sx={{ color: 'text.primary', wordBreak: 'break-all' }}>{fullUserInfo.station_id || '未知'}</Typography>
+                                        </Box>
+                                        {/* 发送消息数 */}
+                                        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                                            <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>发送消息数：</Typography>
+                                            <Typography variant="body1" sx={{ color: 'text.primary' }}>{fullUserInfo.message_count ?? 0}</Typography>
+                                        </Box>
+                                    </Box>
+                                </Paper>
+                                <Button variant="contained" sx={{ mt: 3 }} onClick={() => { setShowFriendList(true); setShowUserProfile(false); }}>好友列表</Button>
+                            </Box>
+                        ) : (
+                            <Box sx={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}><CircularProgress /></Box>
+                        )
+                    ) : showFriendList ? (
+                        <Box sx={{ flex:1, display:'flex', flexDirection:'column', bgcolor:'background.default' }}>
+                            <List sx={{ p:2 }}>
+                                {friends.length === 0 ? (
+                                    <Typography variant="body2" sx={{ textAlign:'center', color:'text.secondary', mt:4 }}>暂无好友，快去添加吧~</Typography>
+                                ) : (
+                                    friends.map(friend => (
+                                        <ListItem key={friend.uid} sx={{ borderRadius:2, mb:1, bgcolor:'background.paper' }}>
+                                            <ListItemAvatar><Avatar src={getAvatarUrl(friend.uid)} /></ListItemAvatar>
+                                            <ListItemText primary={friend.username} secondary={`UID: ${friend.uid}`} />
+                                        </ListItem>
+                                    ))
+                                )}
+                            </List>
+                        </Box>
+                    ) : (
+                        // 主聊天界面
                         <>
                             <Paper elevation={0} sx={{ width:280, borderRight:'1px solid', borderColor:'divider', overflowY:'auto', bgcolor:'background.paper' }}>
                                 <List>
                                     {friends.map(friend => (
-                                        <ListItem key={friend.uid} button selected={selectedFriend?.uid===friend.uid} onClick={()=>setSelectedFriend(friend)} sx={{ borderRadius:1, mx:1, mb:0.5 }}>
+                                        <ListItem key={friend.uid} button selected={selectedFriend?.uid===friend.uid} onClick={()=>{setSelectedFriend(friend);scrollToBottom();}} sx={{ borderRadius:1, mx:1, mb:0.5 }}>
                                             <ListItemAvatar><Avatar src={getAvatarUrl(friend.uid)} onError={(e)=>{ e.target.onerror=null; e.target.src=''; }}><Icon>person</Icon></Avatar></ListItemAvatar>
                                             <ListItemText primary={friend.username} />
                                         </ListItem>
@@ -334,7 +451,7 @@
                                     {loadingFriends && <CircularProgress sx={{ display:'block', mx:'auto', my:2 }} />}
                                 </List>
                             </Paper>
-                            <Box sx={{ flex:1, display:'flex', flexDirection:'column', bgcolor:'background.default', position:'relative' }}>
+                            <Box sx={{ flex:1, display:'flex', flexDirection:'column', bgcolor:'background.default', position:'relative', minWidth: 0, maxWidth: '100%' }}>
                                 {selectedFriend ? (
                                     <>
                                         <Box sx={{ p:2, borderBottom:'1px solid', borderColor:'divider', bgcolor:'background.paper', display:'flex', alignItems:'center' }}>
@@ -362,7 +479,7 @@
                         </>
                     )}
                 </Box>
-                {/* 各种 Dialog 省略（保持原样，不影响主要功能）... 由于篇幅，此处仅示意，实际使用时请补全 */}
+                {/* 各种 Dialog */}
                 <Dialog open={addFriendOpen} onClose={()=>{ setAddFriendOpen(false); setNewFriendName(''); setSearchResult(null); }}>
                     <DialogTitle>添加好友</DialogTitle>
                     <DialogContent>
