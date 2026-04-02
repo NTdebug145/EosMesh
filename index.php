@@ -4,6 +4,8 @@
  * 纯API接口，无HTML输出
  */
 
+ob_clean();
+
 // 允许跨域
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
@@ -11,6 +13,10 @@ header("Access-Control-Allow-Headers: Content-Type, Authorization");
 
 // 处理预检请求 (OPTIONS)
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    // 明确返回 CORS 头部
+    header("Access-Control-Allow-Origin: *");
+    header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization");
     http_response_code(200);
     exit();
 }
@@ -36,18 +42,24 @@ if (!file_exists(USER_DIR)) mkdir(USER_DIR, 0755, true);
 if (!file_exists(CHAT_DIR)) mkdir(CHAT_DIR, 0755, true);
 if (!file_exists(AVATAR_DIR)) mkdir(AVATAR_DIR, 0755, true);
 
-// 首次运行生成配置文件
+// 首次运行生成配置文件（确保包含 [stationPHP] 节）
 if (!file_exists(CONFIG_FILE)) {
     $stationID = generateRandomString(16);
-    $configContent = "[station]\nstationID={$stationID}\nstationNumberDaysInformationStored=3\nstationWhetherCompletelyDeleteUserData=true\n";
+    $configContent = "[station]\nstationID={$stationID}\nstationNumberDaysInformationStored=3\nstationWhetherCompletelyDeleteUserData=true\n\n[stationPHP]\nstationPHPVersion=\"b26.4.2\"\n";
     file_put_contents(CONFIG_FILE, $configContent);
 }
 
-// 读取配置
-$config = parse_ini_file(CONFIG_FILE, true)['station'];
+// 读取完整配置
+$fullConfig = parse_ini_file(CONFIG_FILE, true);
+$config = $fullConfig['station'];
 $stationID = $config['stationID'];
 $daysToKeep = (int)$config['stationNumberDaysInformationStored'];
 $completelyDelete = filter_var($config['stationWhetherCompletelyDeleteUserData'], FILTER_VALIDATE_BOOLEAN);
+
+// 读取 stationPHP 版本，若不存在则设为 unknown
+$stationPHPVersion = isset($fullConfig['stationPHP']['stationPHPVersion']) 
+    ? $fullConfig['stationPHP']['stationPHPVersion'] 
+    : 'unknown';
 
 // 用户索引文件（映射用户ID -> 文件编号）
 $userIndexFile = DATA_DIR . '/user_index.json';
@@ -173,6 +185,9 @@ function authenticate() {
 }
 
 function sendResponse($code, $message, $data = null) {
+    header("Access-Control-Allow-Origin: *");
+    header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization");
     http_response_code($code);
     echo json_encode(['code' => $code, 'msg' => $message, 'data' => $data]);
     exit;
@@ -214,11 +229,40 @@ try {
             deleteAccount($user);
             break;
 
+case 'get_station_php_version':
+    getStationPHPVersion();
+    break;
+
+case 'get_verify_setting':
+    $user = authenticate();
+    getVerifySetting($user);
+    break;
+
+case 'set_verify_setting':
+    $user = authenticate();
+    setVerifySetting($user);
+    break;
+
+case 'get_friend_requests':
+    $user = authenticate();
+    getFriendRequests($user);
+    break;
+
+case 'accept_friend_request':
+    $user = authenticate();
+    acceptFriendRequest($user);
+    break;
+
 case 'get_avatar':
     $uid = $_GET['uid'] ?? '';
     if (empty($uid)) {
         sendResponse(400, 'Missing user ID');
     }
+    // 添加 CORS 头部，确保头像可以被跨域读取
+    header("Access-Control-Allow-Origin: *");
+    header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization");
+    
     // 查找用户头像文件
     $avatarPattern = AVATAR_DIR . '/' . $uid . '.*';
     $files = glob($avatarPattern);
@@ -329,7 +373,7 @@ function register() {
         'id' => $uid,
         'username' => $username,
         'password' => $passwordHash,
-        'friend_verify' => 'anyone', // anyone, need_approve, nobody
+        'friend_verify' => 'need_verify', // allow_all, need_verify, deny_all
         'registered_at' => $now,
         'station_id' => $stationID,
         'friend_requests' => [], // 请求列表: [{'from_uid': 'xxx', 'time': timestamp, 'status': 'pending'}, ...]
@@ -440,39 +484,38 @@ foreach ($files as $file) {
     }
 
     // 检查验证方式
-    $verify = $targetUser['friend_verify'];
-    if ($verify === 'nobody') {
-        sendResponse(403, 'User does not accept friend requests');
-    } elseif ($verify === 'need_approve') {
-        // 发送好友申请
-        $request = [
-            'from_uid' => $user['id'],
-            'time' => time(),
-            'status' => 'pending'
-        ];
-        updateUserData($targetUser['id'], function($u) use ($request) {
-            // 避免重复申请
-            foreach ($u['friend_requests'] as $r) {
-                if ($r['from_uid'] === $request['from_uid'] && $r['status'] === 'pending') {
-                    return $u;
-                }
+$verify = $targetUser['friend_verify'];
+if ($verify === 'deny_all') {
+    sendResponse(403, 'User does not accept friend requests');
+} elseif ($verify === 'need_verify') {
+    // 发送好友申请
+    $request = [
+        'from_uid' => $user['id'],
+        'time' => time(),
+        'status' => 'pending'
+    ];
+    updateUserData($targetUser['id'], function($u) use ($request) {
+        foreach ($u['friend_requests'] as $r) {
+            if ($r['from_uid'] === $request['from_uid'] && $r['status'] === 'pending') {
+                return $u;
             }
-            $u['friend_requests'][] = $request;
-            return $u;
-        });
-        sendResponse(200, 'Friend request sent');
-    } else { // anyone
-        // 直接添加好友
-        updateUserData($user['id'], function($u) use ($targetUser) {
-            $u['friends'][] = $targetUser['id'];
-            return $u;
-        });
-        updateUserData($targetUser['id'], function($u) use ($user) {
-            $u['friends'][] = $user['id'];
-            return $u;
-        });
-        sendResponse(200, 'Friend added');
-    }
+        }
+        $u['friend_requests'][] = $request;
+        return $u;
+    });
+    sendResponse(200, 'Friend request sent');
+} else { // allow_all
+    // 直接添加好友
+    updateUserData($user['id'], function($u) use ($targetUser) {
+        $u['friends'][] = $targetUser['id'];
+        return $u;
+    });
+    updateUserData($targetUser['id'], function($u) use ($user) {
+        $u['friends'][] = $user['id'];
+        return $u;
+    });
+    sendResponse(200, 'Friend added');
+}
 }
 
 // 处理好友申请（接受/拒绝）
@@ -664,3 +707,92 @@ function deleteAccount($user) {
     }
     sendResponse(200, 'Account deleted');
 }
+
+// 获取当前用户的验证方式
+function getVerifySetting($user) {
+    sendResponse(200, 'Verify setting retrieved', ['mode' => $user['friend_verify']]);
+}
+
+// 设置验证方式
+function setVerifySetting($user) {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $mode = $input['mode'] ?? '';
+    if (!in_array($mode, ['allow_all', 'need_verify', 'deny_all'])) {
+        sendResponse(400, 'Invalid mode');
+    }
+    updateUserData($user['id'], function($u) use ($mode) {
+        $u['friend_verify'] = $mode;
+        return $u;
+    });
+    sendResponse(200, 'Verify setting updated');
+}
+
+// 获取待处理的好友申请列表
+function getFriendRequests($user) {
+    $pendingRequests = array_filter($user['friend_requests'], function($req) {
+        return $req['status'] === 'pending';
+    });
+    $result = [];
+    foreach ($pendingRequests as $req) {
+        $fromUser = getUserData($req['from_uid']);
+        if ($fromUser) {
+            $result[] = [
+                'id' => $req['from_uid'],          // 用 from_uid 作为请求唯一标识
+                'from_uid' => $req['from_uid'],
+                'from_username' => $fromUser['username'],
+                'message' => '申请添加您为好友',
+                'time' => $req['time']
+            ];
+        }
+    }
+    sendResponse(200, 'Friend requests retrieved', $result);
+}
+
+// 接受好友申请（前端会传入 request_id，即 from_uid）
+function acceptFriendRequest($user) {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $requestId = $input['request_id'] ?? '';
+    if (empty($requestId)) {
+        sendResponse(400, 'Missing request_id');
+    }
+
+    // 查找申请并更新状态
+    $requestFound = false;
+    updateUserData($user['id'], function($u) use ($requestId, &$requestFound) {
+        foreach ($u['friend_requests'] as &$req) {
+            if ($req['from_uid'] === $requestId && $req['status'] === 'pending') {
+                $req['status'] = 'accepted';
+                $requestFound = true;
+                break;
+            }
+        }
+        return $u;
+    });
+
+    if (!$requestFound) {
+        sendResponse(404, 'Request not found');
+    }
+
+    // 双方加为好友
+    updateUserData($user['id'], function($u) use ($requestId) {
+        if (!in_array($requestId, $u['friends'])) {
+            $u['friends'][] = $requestId;
+        }
+        return $u;
+    });
+    updateUserData($requestId, function($u) use ($user) {
+        if (!in_array($user['id'], $u['friends'])) {
+            $u['friends'][] = $user['id'];
+        }
+        return $u;
+    });
+
+    sendResponse(200, 'Friend request accepted');
+
+}
+
+function getStationPHPVersion() {
+    global $stationPHPVersion;
+    sendResponse(200, 'Station PHP version retrieved', ['version' => $stationPHPVersion]);
+}
+?>
