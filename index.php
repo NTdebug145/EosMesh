@@ -480,7 +480,7 @@ function getMessages($user) {
     $since = isset($_GET['since']) ? (int)$_GET['since'] : 0;
     if ($since > 0) {
         $result = array_values(array_filter($messages, function($msg) use ($since) {
-            return $msg['time'] > $since;
+            return $msg['time'] >= $since;
         }));
         sendResponse(200, 'Messages retrieved', $result);
         return;
