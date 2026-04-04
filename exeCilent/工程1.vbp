@@ -4,6 +4,7 @@ Reference=*\G{00025E01-0000-0000-C000-000000000046}#5.0#0#C:\Program Files (x86)
 Form=C:\Users\XWJ1024\Desktop\À¬»øÍ°\Form1.frm
 Form=C:\Users\XWJ1024\Desktop\À¬»øÍ°\Form2.frm
 Object={831FDD16-0C5C-11D2-A9FC-0000F8754DA1}#2.2#0; MSCOMCTL.OCX
+Form=Form3.frm
 IconForm="Form1"
 Startup="Form1"
 HelpFile=""
