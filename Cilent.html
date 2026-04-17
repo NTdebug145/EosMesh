@@ -279,16 +279,16 @@
 
         // 滚动监听（自动滚动到底部 & 顶部加载更多）
         const handleScroll = React.useCallback(() => {
-            if (chatContainerRef.current) {
-                const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
-                const isNearBottom = scrollHeight - scrollTop - clientHeight < 50;
-                setShouldAutoScroll(isNearBottom);
-                // 滚动到顶部且还有更多历史消息时加载上一页
-                if (scrollTop <= 50 && hasMore && !loadingMore && selectedFriend) {
-                    loadMoreMessages();
-                }
-            }
-        }, [hasMore, loadingMore, selectedFriend]);
+    if (!chatContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 50;
+    setShouldAutoScroll(isNearBottom);
+    
+    // 距离顶部小于 30px 且未在加载中且还有更多消息时，触发加载更多
+    if (scrollTop <= 30 && hasMore && !loadingMore && selectedFriend) {
+        loadMoreMessages();
+    }
+}, [hasMore, loadingMore, selectedFriend]);
 
         // 滚动到底部
         const scrollToBottom = React.useCallback(() => {
@@ -299,36 +299,37 @@
 
         // 加载历史消息（上一页）
         const loadMoreMessages = async () => {
-            if (loadingMore || !hasMore || !selectedFriend) return;
-            setLoadingMore(true);
-            const prevScrollHeight = chatContainerRef.current?.scrollHeight || 0;
-            const nextPage = currentPage - 1;
-            try {
-                const data = await apiRequest('get_messages', { 
-                    token, method:'GET', 
-                    query: { friend_uid: selectedFriend.uid, page: nextPage, limit: 20 } 
-                });
-                const olderMessages = data.data.messages; // 升序（旧→新）
-                if (olderMessages && olderMessages.length > 0) {
-                    setMessages(prev => [...olderMessages, ...prev]);
-                    setCurrentPage(nextPage);
-                    setHasMore(nextPage > 1);
-                    // 恢复滚动位置：新内容插入后滚动高度增加，保持原可视区域相对位置
-                    setTimeout(() => {
-                        if (chatContainerRef.current) {
-                            const newScrollHeight = chatContainerRef.current.scrollHeight;
-                            chatContainerRef.current.scrollTop = newScrollHeight - prevScrollHeight;
-                        }
-                    }, 0);
-                } else {
-                    setHasMore(false);
+    if (loadingMore || !hasMore || !selectedFriend || currentPage <= 1) return;
+    setLoadingMore(true);
+    const prevScrollHeight = chatContainerRef.current?.scrollHeight || 0;
+    const prevScrollTop = chatContainerRef.current?.scrollTop || 0;
+    const nextPage = currentPage - 1;
+    try {
+        const data = await apiRequest('get_messages', { 
+            token, method:'GET', 
+            query: { friend_uid: selectedFriend.uid, page: nextPage, limit: 20 } 
+        });
+        const olderMessages = data.data.messages || [];
+        if (olderMessages.length > 0) {
+            setMessages(prev => [...olderMessages, ...prev]);
+            setCurrentPage(nextPage);
+            setHasMore(nextPage > 1);
+            // 使用 requestAnimationFrame 确保 DOM 更新后再调整滚动位置
+            requestAnimationFrame(() => {
+                if (chatContainerRef.current) {
+                    const newScrollHeight = chatContainerRef.current.scrollHeight;
+                    chatContainerRef.current.scrollTop = newScrollHeight - prevScrollHeight + prevScrollTop;
                 }
-            } catch(err) {
-                setSnackbar({ open:true, message:`加载历史消息失败: ${err.message}`, severity:'error' });
-            } finally {
-                setLoadingMore(false);
-            }
-        };
+            });
+        } else {
+            setHasMore(false);
+        }
+    } catch(err) {
+        setSnackbar({ open:true, message:`加载历史消息失败: ${err.message}`, severity:'error' });
+    } finally {
+        setLoadingMore(false);
+    }
+};
 
         // 轮询获取新消息（增量）
         const pollNewMessages = React.useCallback(async () => {
@@ -364,50 +365,56 @@
 
         // 初始化聊天：获取总消息数并加载最后一页
         const initMessages = async (friendUid) => {
-            if (!friendUid) return;
-            setLoadingMessages(true);
+    if (!friendUid) return;
+    setLoadingMessages(true);
+    setMessages([]);
+    setHasMore(false);
+    setCurrentPage(1);
+    setTotalPages(0);
+    setLatestMsgTime(0);
+    try {
+        // 获取总页数（直接请求最后一页，后端返回 total_pages）
+        const lastPageData = await apiRequest('get_messages', {
+            token, method:'GET',
+            query: { friend_uid: friendUid, page: 1, limit: 20 }
+        });
+        const totalPagesFromServer = lastPageData.data.total_pages || 0;
+        setTotalPages(totalPagesFromServer);
+        
+        if (totalPagesFromServer === 0) {
             setMessages([]);
             setHasMore(false);
-            setCurrentPage(1);
-            setTotalPages(0);
-            setLatestMsgTime(0);
-            try {
-                // 先获取总条数（请求第一页，limit=1）
-                const firstData = await apiRequest('get_messages', { token, method:'GET', query: { friend_uid: friendUid, page: 1, limit: 1 } });
-                const total = firstData.data.total || 0;
-                const limit = 20;
-                const totalPagesCalc = Math.ceil(total / limit);
-                setTotalPages(totalPagesCalc);
-                if (totalPagesCalc === 0) {
-                    setMessages([]);
-                    setHasMore(false);
-                    setCurrentPage(0);
-                    setLatestMsgTime(0);
-                    return;
-                }
-                const lastPage = totalPagesCalc;
-                const pageData = await apiRequest('get_messages', { token, method:'GET', query: { friend_uid: friendUid, page: lastPage, limit } });
-                const loadedMsgs = pageData.data.messages || [];
-                setMessages(loadedMsgs);
-                setCurrentPage(lastPage);
-                setHasMore(lastPage > 1);
-                if (loadedMsgs.length > 0) {
-                    const latest = loadedMsgs[loadedMsgs.length - 1];
-                    setLatestMsgTime(latest.time);
-                }
-setTimeout(() => {
-    if (chatContainerRef.current) {
-        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
-    setShouldAutoScroll(true);
-}, 100);
-                scrollToBottom();
-            } catch(err) {
-                setSnackbar({ open:true, message:`加载消息失败: ${err.message}`, severity:'error' });
-            } finally {
-                setLoadingMessages(false);
+            setCurrentPage(0);
+            return;
+        }
+        
+        // 加载最后一页
+        const lastPage = totalPagesFromServer;
+        const pageData = lastPage === 1 ? lastPageData : await apiRequest('get_messages', {
+            token, method:'GET',
+            query: { friend_uid: friendUid, page: lastPage, limit: 20 }
+        });
+        
+        const loadedMsgs = pageData.data.messages || [];
+        setMessages(loadedMsgs);
+        setCurrentPage(lastPage);
+        setHasMore(lastPage > 1);
+        if (loadedMsgs.length > 0) {
+            setLatestMsgTime(loadedMsgs[loadedMsgs.length - 1].time);
+        }
+        // 滚动到底部
+        setTimeout(() => {
+            if (chatContainerRef.current) {
+                chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
             }
-        };
+            setShouldAutoScroll(true);
+        }, 100);
+    } catch(err) {
+        setSnackbar({ open:true, message:`加载消息失败: ${err.message}`, severity:'error' });
+    } finally {
+        setLoadingMessages(false);
+    }
+};
 
         // 发送消息
 const sendMessage = async () => {
