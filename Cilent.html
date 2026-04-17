@@ -36,7 +36,8 @@
         ThemeProvider, createTheme, CssBaseline, Container, Box, Paper, AppBar, Toolbar, Typography, Button,
         TextField, Avatar, IconButton, List, ListItem, ListItemAvatar, ListItemText, Dialog, DialogTitle,
         DialogContent, DialogActions, Alert, Snackbar, CircularProgress, Icon, LinearProgress, Drawer,
-        ListItemIcon, Switch, FormControlLabel, Tabs, Tab, RadioGroup, FormControl, FormLabel, Radio
+        ListItemIcon, Switch, FormControlLabel, Tabs, Tab, RadioGroup, FormControl, FormLabel, Radio,
+        Divider
     } = MaterialUI;
 
     // ==================== 工具函数 ====================
@@ -547,34 +548,82 @@ const sendMessage = async () => {
                         {!showAbout && !showUserProfile && !showFriendList && <Box><IconButton color="inherit" onClick={()=>setAddFriendOpen(true)}><Icon>add</Icon></IconButton><IconButton color="inherit" onClick={()=>{ setTempApiBase(getApiBase()); setSettingsOpen(true); }}><Icon>settings</Icon></IconButton></Box>}
                     </Toolbar>
                 </AppBar>
-                <Drawer anchor="left" open={drawerOpen} onClose={()=>setDrawerOpen(false)}>
-                    <Box sx={{ width:280, p:2, display:'flex', flexDirection:'column', height:'100%' }}>
-                        <Box sx={{ display:'flex', alignItems:'center', mb:2, pb:1, borderBottom:'1px solid', borderColor:'divider' }}>
-                            <Avatar src={myAvatarUrl} sx={{ width:48, height:48, mr:2 }} onError={(e)=>{ e.target.onerror=null; e.target.src=''; }}><Icon>account_circle</Icon></Avatar>
-                            <Typography variant="subtitle1" sx={{ flexGrow:1, fontWeight:500 }}>{userInfo.username || uid.slice(0,8)}</Typography>
-                            <IconButton size="small" onClick={()=>{ fetchFriends(); setSnackbar({ open:true, message:'好友列表已刷新', severity:'info' }); }} disabled={loadingFriends}><Icon>refresh</Icon></IconButton>
+                
+                {/* 修改后的侧边栏 - 参照 index.html 风格 */}
+                <Drawer anchor="left" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+                    <Box sx={{ width: 280, pt: 2 }}>
+                        {/* 用户信息区域（与 index.html 对齐，且不显示 UID） */}
+                        <Box sx={{ display: 'flex', alignItems: 'center', px: 2, pb: 2 }}>
+                            <Avatar
+                                src={myAvatarUrl}
+                                sx={{ width: 48, height: 48, bgcolor: 'primary.main', mr: 2 }}
+                                onError={(e) => { e.target.onerror = null; e.target.src = ''; }}
+                            >
+                                {userInfo.username?.charAt(0).toUpperCase() || <Icon>account_circle</Icon>}
+                            </Avatar>
+                            <Box sx={{ flex: 1 }}>
+                                <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
+                                    {userInfo.username || uid.slice(0, 8)}
+                                </Typography>
+                                {/* 此处已移除 UID 显示行，符合用户要求 */}
+                            </Box>
+                            {/* 刷新按钮 */}
+                            <IconButton
+                                size="small"
+                                onClick={() => {
+                                    fetchFriends();
+                                    setSnackbar({ open: true, message: '好友列表已刷新', severity: 'info' });
+                                }}
+                                disabled={loadingFriends}
+                                sx={{ ml: 1 }}
+                            >
+                                <Icon>refresh</Icon>
+                            </IconButton>
                         </Box>
-                        <List component="nav" sx={{ flexGrow:1 }}>
-                            <ListItem button onClick={()=>{ setShowUserProfile(true); setDrawerOpen(false); }}>
+
+                        <Divider />
+
+                        {/* 导航菜单列表 */}
+                        <List sx={{ pt: 1 }}>
+                            <ListItem
+                                button
+                                onClick={() => { setShowUserProfile(true); setDrawerOpen(false); }}
+                            >
                                 <ListItemIcon><Icon>account_circle</Icon></ListItemIcon>
                                 <ListItemText primary="用户" />
                             </ListItem>
-                            <ListItem button onClick={()=>{ setShowAbout(true); setDrawerOpen(false); }}>
+                            <ListItem
+                                button
+                                onClick={() => { setShowAbout(true); setDrawerOpen(false); }}
+                            >
                                 <ListItemIcon><Icon>info</Icon></ListItemIcon>
                                 <ListItemText primary="关于" />
                             </ListItem>
-                            <ListItem button onClick={()=>{ setShowMessagesPage(true); setShowAbout(false); setDrawerOpen(false); }}>
+                            <ListItem
+                                button
+                                onClick={() => { setShowMessagesPage(true); setShowAbout(false); setDrawerOpen(false); }}
+                            >
                                 <ListItemIcon><Icon>message</Icon></ListItemIcon>
                                 <ListItemText primary="消息" />
                             </ListItem>
-                            <ListItem button onClick={()=>{ setAvatarUploadOpen(true); setDrawerOpen(false); }}>
+                            <ListItem
+                                button
+                                onClick={() => { setAvatarUploadOpen(true); setDrawerOpen(false); }}
+                            >
                                 <ListItemIcon><Icon>photo_camera</Icon></ListItemIcon>
                                 <ListItemText primary="上传头像" />
                             </ListItem>
                         </List>
-                        <Typography variant="body2" color="text.secondary" align="center" sx={{ mt:2 }}>更多功能开发中...</Typography>
+
+                        {/* 底部提示语 */}
+                        <Box sx={{ px: 2, pb: 2, mt: 'auto' }}>
+                            <Typography variant="body2" color="text.secondary" align="center">
+                                更多功能开发中...
+                            </Typography>
+                        </Box>
                     </Box>
                 </Drawer>
+
                 <Box sx={{ display:'flex', flex:1, overflow:'hidden' }}>
                     {showAbout ? (
                         <AboutPage />
