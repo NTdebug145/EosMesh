@@ -23,7 +23,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 header('Content-Type: application/json; charset=utf-8');
 
-define('STATION_VERSION', 'b26.4.2');
+define('STATION_VERSION', 'b26.4.17');
 define('SERVER_TYPE', 'php');
 define('ROOT_DIR', __DIR__);
 define('DATA_DIR', ROOT_DIR . '/data');
