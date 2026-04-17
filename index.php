@@ -1,7 +1,7 @@
 <?php
 /**
- * EosMesh - 去中心化API（独立文件存储版，修复映射覆盖问题）
- * 每个用户独立文件，彻底解决数据覆盖，兼容 PHP 7.3+
+ * EosMesh - 去中心化API（无文件锁版本）
+ * 移除了所有 flock 调用，简化文件读写，兼容 PHP 7.3+
  */
 
 ob_clean();
@@ -65,34 +65,16 @@ function generateRandomString($length) {
 function getUserData($uid) {
     $file = USER_DIR . '/' . $uid . '.json';
     if (!file_exists($file)) return null;
-    $fp = fopen($file, 'r');
-    if (flock($fp, LOCK_SH)) {
-        $data = file_get_contents($file);
-        flock($fp, LOCK_UN);
-        fclose($fp);
-        $user = json_decode($data, true);
-        if ($user && empty($user['deleted'])) return $user;
-    } else {
-        fclose($fp);
-    }
+    $data = file_get_contents($file);
+    $user = json_decode($data, true);
+    if ($user && empty($user['deleted'])) return $user;
     return null;
 }
 
 function saveUserData($user) {
     $uid = $user['id'];
     $file = USER_DIR . '/' . $uid . '.json';
-    $fp = fopen($file, 'c+');
-    if (flock($fp, LOCK_EX)) {
-        ftruncate($fp, 0);
-        rewind($fp);
-        fwrite($fp, json_encode($user));
-        fflush($fp);
-        flock($fp, LOCK_UN);
-        fclose($fp);
-        return true;
-    }
-    fclose($fp);
-    return false;
+    return file_put_contents($file, json_encode($user)) !== false;
 }
 
 function updateUserData($uid, $callback) {
@@ -102,59 +84,25 @@ function updateUserData($uid, $callback) {
     return saveUserData($user);
 }
 
-/**
- * 获取用户名映射（线程安全，返回数组）
- */
 function getUsernameMap() {
     global $usernameMapFile;
-    $fp = fopen($usernameMapFile, 'r');
-    if (!$fp) return [];
-    if (flock($fp, LOCK_SH)) {
-        $content = '';
-        while (!feof($fp)) $content .= fread($fp, 8192);
-        flock($fp, LOCK_UN);
-        fclose($fp);
-        $map = json_decode($content, true);
-        return is_array($map) ? $map : [];
-    }
-    fclose($fp);
-    return [];
+    if (!file_exists($usernameMapFile)) return [];
+    $content = file_get_contents($usernameMapFile);
+    $map = json_decode($content, true);
+    return is_array($map) ? $map : [];
 }
 
-/**
- * 更新用户名映射（原子操作）
- */
 function updateUsernameMap($username, $uid = null) {
     global $usernameMapFile;
-    $fp = fopen($usernameMapFile, 'c+');
-    if (!$fp) return false;
-    if (!flock($fp, LOCK_EX)) {
-        fclose($fp);
-        return false;
-    }
-    // 读取当前完整内容
-    $content = '';
-    while (!feof($fp)) $content .= fread($fp, 8192);
-    $map = json_decode($content, true);
-    if (!is_array($map)) $map = [];
+    $map = getUsernameMap();
     if ($uid === null) {
         unset($map[$username]);
     } else {
         $map[$username] = $uid;
     }
-    // 写回
-    ftruncate($fp, 0);
-    rewind($fp);
-    fwrite($fp, json_encode($map));
-    fflush($fp);
-    flock($fp, LOCK_UN);
-    fclose($fp);
-    return true;
+    return file_put_contents($usernameMapFile, json_encode($map)) !== false;
 }
 
-/**
- * 通过用户名查找 UID（使用映射缓存）
- */
 function getUidByUsername($username) {
     $map = getUsernameMap();
     return $map[$username] ?? null;
@@ -209,35 +157,22 @@ try {
 
 // ---------------------- 功能实现 ----------------------
 function register() {
-    global $stationID, $usernameMapFile;
+    global $stationID;
     $input = json_decode(file_get_contents('php://input'), true);
     $username = trim($input['username'] ?? '');
     $password = $input['password'] ?? '';
     if (empty($username) || empty($password)) sendResponse(400, 'Username and password required');
     if (strlen($username) > 12) sendResponse(400, 'Username too long (max 12)');
 
-    // 检查用户名唯一性（使用映射文件加锁）
-    $mapFp = fopen($usernameMapFile, 'c+');
-    if (!$mapFp) sendResponse(500, 'System error');
-    if (!flock($mapFp, LOCK_EX)) sendResponse(500, 'System busy');
-    
-    // 从当前句柄读取完整映射
-    $content = '';
-    while (!feof($mapFp)) $content .= fread($mapFp, 8192);
-    $map = json_decode($content, true);
-    if (!is_array($map)) $map = [];
-    
-    if (isset($map[$username])) {
-        flock($mapFp, LOCK_UN); fclose($mapFp);
-        sendResponse(409, 'Username already exists');
-    }
-    // 二次确认（扫描用户文件，防止缓存不一致）
+    // 检查用户名唯一性（无锁，简单顺序检查）
+    $map = getUsernameMap();
+    if (isset($map[$username])) sendResponse(409, 'Username already exists');
+
     $files = glob(USER_DIR . '/*.json');
     foreach ($files as $file) {
         $data = file_get_contents($file);
         $u = json_decode($data, true);
         if ($u && $u['username'] === $username && empty($u['deleted'])) {
-            flock($mapFp, LOCK_UN); fclose($mapFp);
             sendResponse(409, 'Username already exists');
         }
     }
@@ -250,18 +185,8 @@ function register() {
         'friend_verify' => 'need_verify', 'registered_at' => $now, 'station_id' => $stationID,
         'friend_requests' => [], 'friends' => [], 'message_count' => 0, 'avatar' => null, 'deleted' => false,
     ];
-    if (!saveUserData($user)) {
-        flock($mapFp, LOCK_UN); fclose($mapFp);
-        sendResponse(500, 'Failed to save user');
-    }
-    $map[$username] = $uid;
-    // 写回映射文件
-    ftruncate($mapFp, 0);
-    rewind($mapFp);
-    fwrite($mapFp, json_encode($map));
-    fflush($mapFp);
-    flock($mapFp, LOCK_UN);
-    fclose($mapFp);
+    if (!saveUserData($user)) sendResponse(500, 'Failed to save user');
+    updateUsernameMap($username, $uid);
 
     $token = $uid . ':' . hash_hmac('sha256', $uid . $passwordHash, $stationID);
     sendResponse(200, 'Registered successfully', ['uid' => $uid, 'token' => $token]);
@@ -425,36 +350,26 @@ function sendMessage($user) {
 
 function appendMessageToFile($filePath, $message) {
     global $daysToKeep;
-    $fp = fopen($filePath, 'a+');
-    if (flock($fp, LOCK_EX)) {
-        rewind($fp);
-        $messages = [];
-        while (($line = fgets($fp)) !== false) {
-            $line = trim($line);
-            if ($line) {
-                $msg = json_decode($line, true);
-                if (is_array($msg) && isset($msg['time'])) {
-                    $messages[] = $msg;
-                }
+    $messages = [];
+    if (file_exists($filePath)) {
+        $lines = file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        foreach ($lines as $line) {
+            $msg = json_decode($line, true);
+            if (is_array($msg) && isset($msg['time'])) {
+                $messages[] = $msg;
             }
         }
-        $messages[] = $message;
-        $cutoff = time() - ($daysToKeep * 86400);
-        
-        // 已修复：兼容所有PHP版本，无语法错误
-        $messages = array_filter($messages, function($msg) use ($cutoff) {
-            return $msg['time'] >= $cutoff;
-        });
-        
-        ftruncate($fp, 0);
-        rewind($fp);
-        foreach ($messages as $msg) {
-            fwrite($fp, json_encode($msg) . "\n");
-        }
-        fflush($fp);
-        flock($fp, LOCK_UN);
     }
-    fclose($fp);
+    $messages[] = $message;
+    $cutoff = time() - ($daysToKeep * 86400);
+    $messages = array_filter($messages, function($msg) use ($cutoff) {
+        return $msg['time'] >= $cutoff;
+    });
+    $content = '';
+    foreach ($messages as $msg) {
+        $content .= json_encode($msg) . "\n";
+    }
+    file_put_contents($filePath, $content);
 }
 
 function getMessages($user) {
@@ -472,11 +387,9 @@ function getMessages($user) {
                 $messages[] = $msg;
             }
         }
-        // 按时间升序排序（旧→新）
         usort($messages, function($a, $b) { return $a['time'] - $b['time']; });
     }
 
-    // 增量模式：只返回 since 时间之后的消息
     $since = isset($_GET['since']) ? (int)$_GET['since'] : 0;
     if ($since > 0) {
         $result = array_values(array_filter($messages, function($msg) use ($since) {
@@ -486,7 +399,6 @@ function getMessages($user) {
         return;
     }
 
-    // 分页模式
     $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
     $limit = isset($_GET['limit']) ? min(100, max(1, (int)$_GET['limit'])) : 20;
     $total = count($messages);
