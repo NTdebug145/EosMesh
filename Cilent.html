@@ -613,19 +613,12 @@ const sendMessage = async () => {
                                 <ListItemIcon><Icon>message</Icon></ListItemIcon>
                                 <ListItemText primary="消息" />
                             </ListItem>
-                            <ListItem
-                                button
-                                onClick={() => { setAvatarUploadOpen(true); setDrawerOpen(false); }}
-                            >
-                                <ListItemIcon><Icon>photo_camera</Icon></ListItemIcon>
-                                <ListItemText primary="上传头像" />
-                            </ListItem>
                         </List>
 
                         {/* 底部提示语 */}
                         <Box sx={{ px: 2, pb: 2, mt: 'auto' }}>
                             <Typography variant="body2" color="text.secondary" align="center">
-                                更多功能开发中...
+                                
                             </Typography>
                         </Box>
                     </Box>
@@ -639,7 +632,28 @@ const sendMessage = async () => {
                     ) : showUserProfile ? (
                         fullUserInfo ? (
                             <Box sx={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', bgcolor:'background.default', p:3, overflow:'auto' }}>
-                                <Avatar src={getAvatarUrl(uid, avatarVersion)} sx={{ width: 120, height: 120, mb: 2 }} />
+                                 <Box sx={{ position: 'relative', display: 'inline-block', mb: 2 }}>
+                                    <Avatar
+                                        src={getAvatarUrl(uid, avatarVersion)}
+                                        sx={{ width: 120, height: 120 }}
+                                        onError={(e) => { e.target.onerror = null; e.target.src = ''; }}
+                                    />
+                                    <IconButton
+                                        size="small"
+                                        sx={{
+                                            position: 'absolute',
+                                            bottom: 0,
+                                            left: 0,
+                                            bgcolor: 'background.paper',
+                                            '&:hover': { bgcolor: 'background.paper' },
+                                            boxShadow: 1,
+                                            p: 0.5
+                                        }}
+                                        onClick={() => setAvatarUploadOpen(true)}
+                                    >
+                                        <Icon fontSize="small">photo_camera</Icon>
+                                    </IconButton>
+                                </Box>
                                 <Typography variant="h5" gutterBottom>{fullUserInfo.username}</Typography>
                                 <Paper variant="outlined" sx={{ p: 3, width: '100%', maxWidth: 600, overflow: 'hidden' }}>
                                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
