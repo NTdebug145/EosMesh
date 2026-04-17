@@ -1,1 +1,0 @@
-javac -encoding UTF-8 EosMeshServer.java && jar cfe EosMeshServer.jar EosMeshServer *.class
