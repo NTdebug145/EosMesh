@@ -1,0 +1,20 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.nt.eosmesh.app-mergeDebugResources-36:/values-watch-v20/values-watch-v20.xml",
+            "map": [
+                {
+                    "source": "/data/data/com.tom.rv2ide/files/home/.gradle/caches/9.0.0/transforms/ba9243b1266fd9f6fef650b3a2b6d4c5/transformed/appcompat-1.7.1/res/values-watch-v20/values-watch-v20.xml",
+                    "from": {
+                        "startLines": "2,5,8",
+                        "startColumns": "4,4,4",
+                        "startOffsets": "55,214,385",
+                        "endLines": "4,7,10",
+                        "endColumns": "12,12,12",
+                        "endOffsets": "209,380,553"
+                    }
+                }
+            ]
+        }
+    ]
+}

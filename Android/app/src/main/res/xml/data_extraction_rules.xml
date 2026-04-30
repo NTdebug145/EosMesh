@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="eos_prefs.xml" />
+        <include domain="database" path="eosmesh.db" />
+    </cloud-backup>
+</data-extraction-rules>

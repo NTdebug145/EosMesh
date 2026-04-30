@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    
+    <!-- ==================== 主应用主题 ==================== -->
+    <style name="Theme.EosMesh" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        
+        <!-- 主色：蓝色，用于输入框焦点、按钮、开关等 -->
+        <item name="colorPrimary">#1976D2</item>
+        <item name="colorPrimaryVariant">#1565C0</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        
+        <!-- 次要色：红色，用于退出按钮等 -->
+        <item name="colorSecondary">#DC004E</item>
+        <item name="colorSecondaryVariant">#A80039</item>
+        <item name="colorOnSecondary">#FFFFFF</item>
+        
+        <!-- 背景色 -->
+        <item name="android:colorBackground">#303030</item>
+        <item name="colorSurface">#252525</item>
+        <item name="colorOnSurface">#C3C3C3</item>
+        
+        <!-- 错误色 -->
+        <item name="colorError">#CF6679</item>
+        <item name="colorOnError">#C3C3C3</item>
+        
+        <!-- 状态栏颜色：与顶栏 #151515 一致 -->
+        <item name="android:statusBarColor">#151515</item>
+        
+        <!-- 全局输入框样式 -->
+        <item name="textInputStyle">@style/CustomOutlinedBox</item>
+        
+        <!-- 对话框主题 -->
+        <item name="alertDialogTheme">@style/AlertDialogStyle</item>
+        
+        <item name="android:forceDarkAllowed" tools:targetApi="q">true</item>
+    </style>
+
+    <!-- ==================== 工具栏主题 ==================== -->
+    <style name="ToolbarTheme" parent="ThemeOverlay.MaterialComponents.Dark.ActionBar">
+        <item name="colorControlNormal">#C3C3C3</item>
+    </style>
+
+    <!-- ==================== 输入框主题 ==================== -->
+    <style name="CustomOutlinedBox" parent="Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+        <!-- 边框颜色（状态选择器） -->
+        <item name="boxStrokeColor">@color/input_box_stroke</item>
+        <!-- 提示文字颜色（状态选择器） -->
+        <item name="hintTextColor">@color/input_hint</item>
+        <!-- 边框宽度 -->
+        <item name="boxStrokeWidth">1dp</item>
+        <item name="boxStrokeWidthFocused">2dp</item>
+        <!-- 输入框背景透明 -->
+        <item name="boxBackgroundColor">@android:color/transparent</item>
+        <!-- 兜底颜色 -->
+        <item name="android:textColorHint">#C3C3C3</item>
+    </style>
+
+    <!-- ==================== 对话框主题 ==================== -->
+    <style name="AlertDialogStyle" parent="ThemeOverlay.MaterialComponents.MaterialAlertDialog">
+        <!-- 对话框背景色 -->
+        <item name="colorSurface">#252525</item>
+        <item name="android:background">#252525</item>
+        <!-- 文字颜色 -->
+        <item name="android:textColorPrimary">#C3C3C3</item>
+        <item name="android:textColorSecondary">#9E9E9E</item>
+        <!-- 按钮样式 -->
+        <item name="buttonBarPositiveButtonStyle">@style/AlertButtonStyle</item>
+        <item name="buttonBarNegativeButtonStyle">@style/AlertButtonStyle</item>
+    </style>
+
+    <!-- ==================== 对话框按钮样式 ==================== -->
+    <style name="AlertButtonStyle" parent="Widget.MaterialComponents.Button.TextButton">
+        <item name="android:textColor">#1976D2</item>
+    </style>
+
+</resources>

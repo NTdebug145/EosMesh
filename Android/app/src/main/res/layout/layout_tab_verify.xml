@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background_dark">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="好友验证方式"
+            android:textColor="#C3C3C3"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="选择添加好友时的验证方式"
+            android:textColor="#9E9E9E"
+            android:textSize="14sp"
+            android:layout_marginBottom="16dp" />
+
+        <RadioGroup
+            android:id="@+id/radioGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/radioAllowAll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="允许任何人添加"
+                android:textColor="#C3C3C3" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/radioNeedVerify"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="需要验证（发送申请）"
+                android:textColor="#C3C3C3" />
+
+            <com.google.android.material.radiobutton.MaterialRadioButton
+                android:id="@+id/radioDenyAll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="拒绝所有人添加"
+                android:textColor="#C3C3C3" />
+
+        </RadioGroup>
+
+        <ProgressBar
+            android:id="@+id/progressVerify"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:layout_gravity="center"
+            android:layout_marginTop="16dp"
+            android:visibility="gone" />
+
+    </LinearLayout>
+</ScrollView>
