@@ -1,367 +1,163 @@
-# EosMesh 轻量级去中心化 IM 演示项目
+# EosMesh 项目介绍
 
-EosMesh 是一个用于技术演示的轻量级即时通讯系统，展示基于文件存储的社交核心功能。项目由**前端客户端**和**多语言后端**组成，支持 PHP、Java、Python 三种服务端实现，便于开发者学习不同语言下的 RESTful API 设计、Token 认证、文件存储等概念。
+EosMesh 是一个轻量级的去中心化即时通讯（IM）演示项目，旨在展示基于 PHP + 文件存储的简易社交系统核心功能。项目由两部分构成：
 
-![a](icon.png)
+- **前端客户端**（`Cilent.html`）：单页面 Web 应用，使用 React + Material-UI 构建。
+- **后端 API**（`index.php`）：PHP 编写的 RESTful 接口，处理用户认证、好友关系、消息收发、头像上传等业务逻辑，所有数据以 JSON 文件形式存储在服务器本地。
 
-> ⚠️ **重要提醒**  
-> 本项目仅为小型技术演示，未针对高并发、数据安全、分布式部署等生产环境进行优化，**不适合大规模部署或实际商业应用**。  
-> **Python 服务端极不稳定**，仅少数时期维护更新，**强烈不建议**用于任何长期运行或生产场景。
+![图标](icon.png)
 
----
-
-## ✨ 主要功能
-
-- **用户系统**：注册/登录（密码哈希存储）、头像上传（JPG/PNG/GIF ≤2MB）、账号注销（软删除/完全删除可配置）
-- **好友管理**：按用户名或 32 位 UID 搜索用户、添加好友（三种验证模式：允许所有人/需验证/拒绝添加）、处理好友申请、好友列表展示
-- **即时通讯**：一对一私聊、消息自动滚动/手动滚动暂停、聊天记录按时间排序、过期消息自动清理
-- **界面体验**：亮色/暗色主题切换（保存于 localStorage）、响应式布局（移动/桌面）、汉堡菜单（关于页、头像上传入口）
+> ⚠️ **重要说明**：本项目仅为小型技术演示，未针对高并发、数据安全、分布式部署等生产环境需求进行优化，**不适合大规模部署或实际商业应用**。
 
 ---
 
-## 🗂️ 项目结构
+## 主要功能
 
-```
-EosMesh/
-├── Cilent.html               # 前端客户端（React + Material-UI 单页应用）
-├── index.php                 # PHP 后端 API（原生，无框架）
-├── EosMeshServer.java        # Java 后端（基于 com.sun.net.httpserver）
-├── EosMeshServer.py          # Python 后端（基于 Flask，极不稳定）
-├── station.ini               # 站点配置（首次运行自动生成）
-└── data/                     # 数据存储目录（自动创建）
-    ├── user_index.json       # 用户 ID → 分片文件编号映射
-    ├── user/                 # 用户数据分片存储（每文件 ≤50 用户）
-    ├── chat/friend/          # 聊天记录（按用户分目录）
-    └── avatar/               # 用户头像文件
-```
+1. **用户系统**
+   - 注册/登录（用户名 + 密码，密码使用 `password_hash` 加密）
+   - 头像上传（支持 JPG/PNG/GIF，最大 2MB）
+   - 账号注销（支持软删除或彻底删除，可配置）
 
----
+2. **好友管理**
+   - 通过用户名或 32 位 UID 搜索用户
+   - 添加好友（三种验证方式：任何人可加、需验证、禁止添加）
+   - 处理好友申请（接受/拒绝）
+   - 显示好友列表及头像
 
-## 🚀 服务端部署与启动
+3. **即时通讯**
+   - 与好友进行一对一私聊
+   - 消息自动滚动至底部，支持手动滚动时暂停自动滚动
+   - 聊天记录按时间排序，并定期清理过期消息（可配置保留天数）
 
-### 共通数据说明
-- 所有服务端均使用相同的文件存储结构（`data/` 目录），理论上可互相替换数据，但跨语言迁移需谨慎。
-- 首次启动时会自动生成 `station.ini` 配置文件，其中包含站点 ID、消息保留天数、删除策略等，可按需修改。
-
-### 1. PHP 版（原始实现）
-
-**特点**：原生 PHP，无任何依赖，兼容大多数虚拟主机；性能尚可，适合快速演示。
-
-**环境要求**：PHP 7.4+（需启用 `fileinfo`、`json` 等扩展）
-
-**部署步骤**：
-1. 将 `index.php` 上传至 Web 服务器目录（如 Apache 的 `htdocs` 或 Nginx 的 `html`）。
-2. 确保 `data/` 目录及其子目录具有写入权限（例如 `chmod 755 -R data`）。
-3. （可选）配置 URL 重写隐藏 `index.php`，但非必需。
-4. 访问 `http://your-server/index.php?action=get_station_version` 测试是否正常返回 JSON。
-
-**启动命令**（PHP 内置服务器，仅测试用）：
-```bash
-php -S 0.0.0.0:8080
-```
-然后在浏览器打开客户端，填写 API 地址 `http://服务器IP:8080/index.php`。
+4. **界面与体验**
+   - 亮色/暗色主题切换（偏好保存于 localStorage）
+   - 响应式布局，适配移动端与桌面端
+   - 汉堡菜单包含关于页面（显示 GitHub 链接与版本号）和头像上传入口
 
 ---
 
-### 2. Java 版
+## 技术栈
 
-**特点**：使用 JDK 内置 `com.sun.net.httpserver`，无需第三方库；并发性能优于 PHP/Python 版；适合学习 Java 原生 HTTP 服务。
-
-**环境要求**：JDK 8 或更高版本
-
-**编译与运行**：
-```bash
-javac EosMeshServer.java
-java EosMeshServer
-```
-启动后会输出类似 `127.0.0.1:54321` 的本地地址和随机端口。服务将监听该地址，客户端需填写完整 URL，例如：
-```
-http://127.0.0.1:54321/
-```
-> 注意：Java 版默认监听所有网络接口（`0.0.0.0`），外部访问需确保防火墙允许该端口。
-
-**跨平台**：适用于 Windows / Linux / macOS，只需安装 JRE。
+| 层级         | 技术                                                                 |
+|--------------|----------------------------------------------------------------------|
+| **前端 (Web)** | HTML5/CSS3/JS (ES6)，React 18 (UMD)，Material-UI 5，Emotion          |
+| **前端 (Android)** | Kotlin，Material Design，RecyclerView，协程，EncryptedSharedPreferences |
+| **后端**     | PHP 7.4+ (原生，无框架)，文件系统作为数据库 (JSON 存储)               |
+| **通信**     | RESTful API，`fetch` 请求，支持 CORS                                 |
+| **认证**     | Token 机制：`uid:HMAC‑SHA256(uid+密码哈希, stationID)`，有效期5分钟   |
 
 ---
 
-### 3. Python 版（⚠️ 极不稳定，仅用于实验）
 
-> **严重警告**  
-> Python 后端基于 Flask，存在以下已知问题：
-> - 多线程环境下文件锁机制不完善，高并发时易数据损坏
-> - 头像上传解析有 bug，部分图片无法正确保存
-> - 长期运行内存占用增长，需手动重启
-> - 维护频率极低，**不推荐任何实际使用**
+### 关键设计说明
 
-**环境要求**：Python 3.7+，需安装依赖：
-```bash
-pip install flask bcrypt
-```
-
-**运行方式**：
-```bash
-python EosMeshServer.py
-```
-输出类似 `127.0.0.1:54322` 的地址。客户端填写该地址即可。
-
-> 建议仅用于单用户功能验证，切勿用于多人测试或演示。
+- **无数据库**：所有数据（用户、好友关系、消息）均以 JSON 文件存储，利用文件系统实现持久化。
+- **用户数据分片**：每个用户独立文件，避免单文件过大；通过 `username_map.json` 快速查找 UID。
+- **消息过期**：根据 `station.ini` 中的 `stationNumberDaysInformationStored` 配置，自动清理超过保留天数的聊天记录。
+- **认证安全**：Token 基于 HMAC-SHA256 签名，有效期 5 分钟，每 4 分钟可刷新一次，降低盗用风险。
+- **并发处理**：对聊天文件的写入使用 `flock` 进行文件锁，避免多请求同时写入导致数据损坏。
 
 ---
 
-## 💻 客户端使用说明
+## 部署说明
 
-客户端是一个单 HTML 文件 `Cilent.html`，基于 React 18 + Material-UI 构建，无需编译或安装。
+### 环境要求
 
-### 快速开始
-1. 将 `Cilent.html` 放置在任何 Web 服务器上（或直接用浏览器打开 `file://` 协议，但可能因跨域限制无法正常使用）。
-2. 推荐使用本地 Web 服务器，例如：
-   - Python 简易服务器：`python -m http.server 3000`
-   - 或使用 VS Code Live Server 等工具。
-3. 在浏览器中访问客户端地址（如 `http://localhost:3000/Cilent.html`）。
-4. 首次打开时，页面会要求填写**站点链接**（即后端 API 的完整 URL，例如 `http://192.168.1.100:8080/index.php`）。
-5. 填写后即可进行注册、登录、添加好友、聊天等操作。
+- PHP 7.4 或更高版本
+- 支持 `glob`、`file_put_contents` 等文件操作函数
+- Web 服务器（Apache/Nginx），建议配置 URL 重写以隐藏 `index.php`
 
-### 客户端主要界面
-- **登录/注册页**：设置 API 地址、输入用户名密码。
-- **主界面**：左侧好友列表，右侧聊天区域；顶部工具栏可添加好友、打开设置。
-- **汉堡菜单**：包含“用户”页（查看个人信息及消息总数）、“关于”页（显示版本及 GitHub 链接）、“消息”页（管理好友验证方式和待处理申请）、“上传头像”入口。
-- **设置**：可修改 API 地址、切换暗色主题、退出登录。
+### 快速部署
 
-### 客户端与后端的对接
-- 所有 API 请求通过 `fetch` 发送，遵循 RESTful 风格，使用 `action` 参数区分接口。
-- 认证采用 Token 机制（`uid:HMAC-SHA256`），服务端验证签名。
-- 头像通过独立接口 `?action=get_avatar&uid=xxx` 获取，支持跨域。
+1. 将 `index.php` 上传至服务器任意目录。
+2. 确保 `data/` 目录及子目录具有读写权限（如 `chmod 755`）。
+3. 前端 `Cilent.html` 可放在任意 Web 服务器，首次访问时需在登录界面填写后端 API 地址（即 `index.php` 的完整 URL）。
 
----
+### 配置说明
 
-## 🧱 架构与数据存储
+`station.ini` 在首次运行时自动生成，可手动修改：
 
-### 核心设计
-- **无数据库**：所有数据以 JSON 文件形式存储，直接利用文件系统。
-- **用户分片**：避免单个文件过大，每个 `user_{n}.json` 最多 50 个用户记录。
-- **聊天记录按对话分文件**：`data/chat/friend/{uidA}/{uidB}.json` 存储 A 与 B 的所有消息，JSON Lines 格式。
-- **消息过期**：根据 `station.ini` 中的 `stationNumberDaysInformationStored` 自动清理旧消息。
-- **并发控制**：PHP/Java 版本对聊天文件写入使用 `flock` 或文件锁；Python 版锁机制不完善。
-
-### 配置文件 `station.ini`
 ```ini
 [station]
-stationID = "随机16位字符串"
-stationNumberDaysInformationStored = 3
-stationWhetherCompletelyDeleteUserData = true
+stationID = "随机16位字符串"                # 站点唯一标识，影响 Token 计算
+stationNumberDaysInformationStored = 3     # 聊天记录保留天数
+stationWhetherCompletelyDeleteUserData = true   # true=彻底删除，false=软删除
 ```
+---
+
+## 项目局限性（为什么不适合大规模部署）
+
+| 方面           | 问题描述                                                                                                 |
+|----------------|----------------------------------------------------------------------------------------------------------|
+| **性能**       | 所有数据基于文件读写，无索引和缓存。用户量增加时，操作效率极低。                                           |
+| **并发能力**   | 文件锁仅提供基础保护，高并发下易阻塞或数据损坏。                                                          |
+| **扩展性**     | 数据分片策略简单，无法水平扩展。聊天记录单文件存储，长期运行后影响读写速度。                               |
+| **安全性**     | 密码 bcrypt 哈希存储，但 Token 虽有 5 分钟有效期和刷新机制，仍无速率限制，易被暴力破解。                  |
+| **可靠性**     | 无数据备份、无事务，服务器故障或写入失败可能导致数据丢失。                                                |
+| **功能完整度** | 缺少群聊、消息已读回执、离线推送、多媒体消息等现代 IM 核心功能。                                          |
+| **部署复杂度** | 依赖文件系统权限，无法在多服务器间共享数据（无集中存储）。                                                 |
 
 ---
 
-## ⚠️ 项目局限性（为什么不适合生产环境）
+## 总结
 
-| 方面         | 问题描述                                                                 |
-|--------------|--------------------------------------------------------------------------|
-| **性能**     | 文件存储无索引，用户量增大后查询效率极低。                                |
-| **并发**     | 简单文件锁在高并发下易阻塞或数据损坏。                                    |
-| **扩展性**   | 分片策略简单，无法水平扩展；聊天记录单文件会逐渐变大。                    |
-| **安全性**   | Token 永久有效，无刷新机制；API 无速率限制，易被暴力破解。                |
-| **可靠性**   | 无事务、无备份，服务器故障可能丢失数据。                                  |
-| **功能完整** | 缺少群聊、已读回执、离线推送、多媒体消息等现代 IM 功能。                  |
-| **部署**     | 依赖文件系统权限，无法在多服务器间共享数据（无集中存储）。                |
+EosMesh 是一个适合学习 PHP + 文件存储架构的演示项目，展示了从零构建简易社交系统所需的基本模块。代码结构清晰、前后端分离，便于理解 RESTful API 设计、Token 认证、前端状态管理等概念。**但该项目不满足生产环境的高可用、高性能、高安全标准，仅推荐用于个人学习、内部测试或技术展示。**
+
+**项目作者**：GitHub [@NTdebug145](https://github.com/NTdebug145)  
+**许可证**：GPL v3
 
 ---
 
-## 📜 许可证与作者
+## 附加说明
 
-- **项目作者**：GitHub [@NTdebug145](https://github.com/NTdebug145)
-- **许可证**：GPL v3
-- **客户端版本**：b26.4.2 - HTML
-- **后端版本**：b26.4.2（PHP/Java/Python 均实现相同 API 协议）
-
----
-
-## 📌 补充说明
-
-- 若需自定义消息保留天数，请直接修改 `station.ini` 中的 `stationNumberDaysInformationStored`。
-- 切换后端语言时，**请清空 `data/` 目录**（因为不同语言实现的用户密码哈希算法不同，无法兼容已有数据）。
-- 客户端的 API 地址支持 `http://` 和 `https://`，但服务端默认未启用 SSL，生产环境应前置 Nginx 反向代理并配置证书。
-
-
-
-# EosMesh – Lightweight Decentralized IM Demo
-
-EosMesh is a technical demonstration of a lightweight instant messaging system, showcasing core social features built on file-based storage. It consists of a **single‑page frontend client** (`Cilent.html`) and **backend implementations in three languages** (PHP, Java, Python), allowing developers to explore RESTful API design, token authentication, and file persistence across different stacks.
-
-![a](icon.png)
-
-> ⚠️ **Important Note**  
-> This project is a **proof of concept only**. It is **not optimized for production** (high concurrency, security, scalability, etc.).  
-> The **Python backend is highly unstable** – it receives only sporadic maintenance and **should not be used for any serious or long‑running deployment**.
+- **Android 客户端**：项目同时提供了一个原生 Android 客户端（Kotlin），支持相同的 API 接口，具备消息推送、头像缓存、加密存储等功能。客户端版本号：`b26.4.30`。
+- **Token 刷新**：服务端实现了 Token 刷新接口 `refresh_token`，客户端会每 4 分钟自动刷新，保证长期在线。
+- **头像缓存**：Android 客户端根据头像 MD5 值进行缓存，减少网络请求。
 
 ---
 
-## ✨ Key Features
+### EosMesh Project Introduction
 
-- **User system** – Registration / login (password hashed), avatar upload (JPG/PNG/GIF ≤2MB), account deletion (soft or hard delete, configurable).
-- **Friend management** – Search by username or 32‑char UID, add friends (three verification modes: allow all / require approval / deny all), accept/reject friend requests, view friend list with avatars.
-- **Instant messaging** – One‑to‑one private chats, auto‑scroll with manual scroll override, chat history sorted by time, automatic cleanup of old messages (retention configurable).
-- **UI & experience** – Light/dark theme toggle (saved in localStorage), responsive layout (mobile/desktop), hamburger menu with About page and avatar upload entry.
+EosMesh is a lightweight, decentralized instant messaging (IM) demonstration project designed to showcase the core functionality of a simple social system built with PHP and file‑based storage. The project consists of two parts:
 
----
+- **Frontend client** (`Cilent.html`): a single‑page web application built with React and Material‑UI.
+- **Backend API** (`index.php`): a PHP‑based RESTful API that handles user authentication, friend relationships, messaging, avatar uploads, and other business logic. All data is stored locally on the server as JSON files.
 
-## 📁 Project Structure
+![图标](icon.png)
 
-```
-EosMesh/
-├── Cilent.html               # Frontend client (React + Material‑UI SPA)
-├── index.php                 # PHP backend (native, no framework)
-├── EosMeshServer.java        # Java backend (built‑in com.sun.net.httpserver)
-├── EosMeshServer.py          # Python backend (Flask – highly unstable)
-├── station.ini               # Site configuration (auto‑generated on first run)
-└── data/                     # Data storage (auto‑created)
-    ├── user_index.json       # User ID → shard file mapping
-    ├── user/                 # Sharded user data (≤50 users per file)
-    ├── chat/friend/          # Chat history (per‑user directories)
-    └── avatar/               # User avatars
-```
+> **⚠️ Important note**: This project is a small‑scale technical demonstration and has not been optimized for production requirements such as high concurrency, data security, or distributed deployment. It is not suitable for large‑scale deployment or real‑world commercial use.
 
----
+### Key Features
 
-## 🚀 Backend Deployment & Startup
+1. **User System**: Registration/login, avatar upload, account deletion (configurable soft/hard delete).
+2. **Friend Management**: Search by username/UID, add friends (three verification modes), process requests, display friend list with avatars.
+3. **Instant Messaging**: One‑to‑one private chat, auto-scroll, message expiration cleanup.
+4. **Interface & Experience**: Light/dark theme toggle, responsive layout, hamburger menu with about page and avatar upload.
 
-### Common Notes
-- All backends use the same file‑based storage (`data/`). Data can theoretically be moved between implementations, but cross‑language migration is **not supported** due to differences in password hashing.
-- On first start, `station.ini` is created. You can edit it to change message retention days or deletion policy.
+### Technology Stack
 
----
+- **Frontend (Web)**: HTML5/CSS3/JS (ES6), React 18, Material-UI 5, Emotion.
+- **Frontend (Android)**: Kotlin, Material Design, Coroutines, EncryptedSharedPreferences.
+- **Backend**: PHP 7.4+ (native, no framework), file-based JSON storage.
+- **Communication**: RESTful API, CORS enabled.
+- **Authentication**: Token mechanism `uid:HMAC‑SHA256(uid+password_hash, stationID)` with 5-minute validity and refresh support.
 
-### 1. PHP Backend (Original Implementation)
+### Deployment Instructions
 
-**Characteristics** – Pure PHP, no dependencies, runs on most shared hosting; decent performance for demonstrations.
+- PHP 7.4+ with file write permissions.
+- Upload `index.php` to server, ensure `data/` directory is writable.
+- Frontend (`Cilent.html`) can be hosted separately; enter API URL on first login.
+- Configuration via `station.ini` (auto-generated).
 
-**Requirements** – PHP 7.4+ (with `fileinfo`, `json` extensions).
+### Limitations
 
-**Deployment**  
-1. Upload `index.php` to your web server directory (e.g., Apache `htdocs` or Nginx `html`).  
-2. Ensure `data/` and its subdirectories are writable (`chmod 755 -R data`).  
-3. (Optional) Configure URL rewriting to hide `index.php`.  
-4. Test by visiting `http://your-server/index.php?action=get_station_version` – it should return JSON.
+- No indexes, caches, or transactions → poor performance and reliability under load.
+- File locks provide basic concurrency only.
+- Lacks modern IM features (group chat, read receipts, offline push).
+- Not suitable for multi-server deployment.
 
-**Quick test with PHP built‑in server**  
-```bash
-php -S 0.0.0.0:8080
-```
-Then point the client to `http://server-ip:8080/index.php`.
+### Summary
 
----
+EosMesh is a learning-oriented demonstration project for PHP file-based architectures. It is **not production-ready** but is ideal for studying RESTful APIs, token authentication, and frontend state management.
 
-### 2. Java Backend
-
-**Characteristics** – Uses JDK’s built‑in `com.sun.net.httpserver`; no third‑party libraries; better concurrency than PHP/Python; good for learning native HTTP services in Java.
-
-**Requirements** – JDK 8 or higher.
-
-**Compile & Run**  
-```bash
-javac EosMeshServer.java
-java EosMeshServer
-```
-The server prints an address like `127.0.0.1:54321` – it listens on all interfaces (`0.0.0.0`). The client must use the full URL, e.g., `http://127.0.0.1:54321/`.
-
-**Platform** – Works on Windows, Linux, macOS (JRE required).
-
----
-
-### 3. Python Backend (⚠️ Highly Unstable)
-
-> **Serious Warning**  
-> The Python backend (Flask) has multiple issues:
-> - Incomplete file locking → data corruption under concurrent requests.
-> - Avatar upload parsing is buggy (many images fail to save).
-> - Memory leaks over time → requires frequent restarts.
-> - Maintenance is extremely rare. **Not recommended for any use case.**
-
-**Requirements** – Python 3.7+, install dependencies:
-```bash
-pip install flask bcrypt
-```
-
-**Run**  
-```bash
-python EosMeshServer.py
-```
-Outputs `127.0.0.1:54322`. Use this URL in the client.
-
-> Only use for quick feature validation on a single user – never for multi‑user tests or demos.
-
----
-
-## 💻 Frontend Client
-
-The client is a single HTML file `Cilent.html` built with React 18 + Material‑UI. No build step required.
-
-### How to Use
-1. Serve `Cilent.html` with any web server (e.g., `python -m http.server 3000` or VS Code Live Server).  
-   *Opening directly with `file://` may cause CORS issues.*  
-2. Open the client in a browser (e.g., `http://localhost:3000/Cilent.html`).  
-3. On the first screen, enter the **backend API URL** (e.g., `http://192.168.1.100:8080/index.php`).  
-4. Register or log in, then add friends and start chatting.
-
-### Client Interface Overview
-- **Login/Register** – Set API URL, enter username/password.  
-- **Main view** – Friend list on the left, chat area on the right; top bar has “Add friend” and “Settings”.  
-- **Hamburger menu** – Contains “User” (profile with message count), “About” (versions and GitHub link), “Messages” (friend verification mode and pending requests), “Upload avatar”.  
-- **Settings** – Change API URL, toggle dark mode, log out.
-
-### API Integration
-- All requests use `fetch` with the `action` query parameter.  
-- Authentication uses a token: `uid:HMAC-SHA256(uid+password_hash, stationID)`.  
-- Avatars are retrieved via `?action=get_avatar&uid=xxx` (CORS enabled).
-
----
-
-## 🧱 Architecture & Data Storage
-
-- **No database** – All data stored as JSON files.  
-- **User sharding** – Users are distributed across `user_{n}.json` files (max 50 per file).  
-- **Chat storage** – `data/chat/friend/{uidA}/{uidB}.json` stores messages between A and B (JSON Lines format).  
-- **Message expiry** – Old messages are automatically purged based on `stationNumberDaysInformationStored` in `station.ini`.  
-- **Concurrency** – PHP and Java use file locking (`flock` or `FileLock`); Python does not have reliable locking.
-
-### Sample `station.ini`
-```ini
-[station]
-stationID = "Random16CharString"
-stationNumberDaysInformationStored = 3
-stationWhetherCompletelyDeleteUserData = true
-```
-
----
-
-## ⚠️ Limitations (Why Not for Production)
-
-| Area           | Issue                                                                 |
-|----------------|-----------------------------------------------------------------------|
-| Performance    | No indexes, full file scans for user searches → very slow at scale.   |
-| Concurrency    | Basic file locks cause blocking or corruption under high load.        |
-| Scalability    | Simple sharding, cannot scale horizontally; chat files grow over time.|
-| Security       | Tokens never expire; no rate limiting; vulnerable to brute force.     |
-| Reliability    | No transactions, no backups; server crash may corrupt data.           |
-| Features       | Missing group chats, read receipts, push notifications, rich media.   |
-| Deployment     | Requires shared filesystem; cannot be distributed across servers.     |
-
----
-
-## 📜 License & Author
-
-- **Author** – GitHub [@NTdebug145](https://github.com/NTdebug145)  
-- **License** – GPL v3  
-- **Client version** – b26.4.2 – HTML  
-- **Backend version** – b26.4.2 (PHP/Java/Python all implement the same API protocol)
-
----
-
-## 📌 Additional Notes
-
-- To change message retention, edit `station.ini` and restart the server.  
-- **Do not mix backends without clearing the `data/` directory** – password hashing algorithms differ, and user records will be incompatible.  
-- For HTTPS, put a reverse proxy (Nginx/Apache) in front of the backend.  
-- The Python backend is **not safe for any concurrent usage** – use only for isolated testing.
-
-**Enjoy exploring EosMesh!**
+**License**: GPL v3
