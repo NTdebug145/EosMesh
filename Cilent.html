@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>EosMesh 客户端</title>
+    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@emotion/react@11.11.1/dist/emotion-react.umd.min.js"></script>
+    <script src="https://unpkg.com/@emotion/styled@11.11.0/dist/emotion-styled.umd.min.js"></script>
+    <script src="https://unpkg.com/@mui/material@5.15.0/umd/material-ui.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 3px; }
+        .message-bubble { max-width: 70%; word-wrap: break-word; border-radius: 18px; padding: 8px 12px; margin: 4px 0; word-break: break-all; white-space: pre-wrap; }
+        .message-mine { background-color: #1976d2; color: white; align-self: flex-end; border-bottom-right-radius: 4px; }
+        .message-other { background-color: #e0e0e0; color: #000; align-self: flex-start; border-bottom-left-radius: 4px; }
+        .message-time { font-size: 0.7rem; margin-top: 2px; color: #888; }
+        .chat-messages { display: flex; flex-direction: column; overflow-y: auto; flex: 1; padding: 16px; position: relative; min-width: 0; max-width: 100%; box-sizing: border-box; }
+        body { margin: 0; background-color: #f5f5f5; }
+        .search-result { display: flex; align-items: center; padding: 8px; margin-top: 8px; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; }
+        .search-result:hover { background-color: #f5f5f5; }
+        .loading-more-indicator { text-align: center; padding: 8px; color: #888; font-size: 12px; }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+    const MaterialUI = window.MaterialUI;
+    const {
+        ThemeProvider, createTheme, CssBaseline, Container, Box, Paper, AppBar, Toolbar, Typography, Button,
+        TextField, Avatar, IconButton, List, ListItem, ListItemAvatar, ListItemText, Dialog, DialogTitle,
+        DialogContent, DialogActions, Alert, Snackbar, CircularProgress, Icon, LinearProgress, Drawer,
+        ListItemIcon, Switch, FormControlLabel, Tabs, Tab, RadioGroup, FormControl, FormLabel, Radio,
+        Divider
+    } = MaterialUI;
+
+    // ==================== 工具函数 ====================
+    function getApiBase() { return localStorage.getItem('eos_api_base') || ''; }
+    function setApiBase(url) { localStorage.setItem('eos_api_base', url); }
+    function getDarkModePreference() { const saved = localStorage.getItem('eos_dark_mode'); return saved !== null ? saved === 'true' : false; }
+    function setDarkModePreference(isDark) { localStorage.setItem('eos_dark_mode', isDark); }
+
+    async function apiRequest(action, options = {}) {
+        const apiBase = getApiBase();
+        if (!apiBase) throw new Error('未设置站点链接，请先设置');
+        const { method = 'POST', body = null, token = null, query = {} } = options;
+        let url = apiBase + (apiBase.includes('?') ? '&' : '?') + `action=${encodeURIComponent(action)}`;
+        for (const [key, val] of Object.entries(query)) if (val !== undefined) url += `&${encodeURIComponent(key)}=${encodeURIComponent(val)}`;
+        const headers = {};
+        if (token) headers['Authorization'] = token;
+        const isFormData = body instanceof FormData;
+        if (!isFormData && body && method !== 'GET') headers['Content-Type'] = 'application/json';
+        const fetchOptions = { method, headers };
+        if (body) fetchOptions.body = isFormData ? body : JSON.stringify(body);
+        const response = await fetch(url, fetchOptions);
+        const data = await response.json();
+        if (!response.ok || (data.code !== 200 && data.code !== 201)) throw new Error(data.msg || '请求失败');
+        return data;
+    }
+
+    function saveAuth(uid, token) { localStorage.setItem('eos_uid', uid); localStorage.setItem('eos_token', token); }
+    function getAuth() { return { uid: localStorage.getItem('eos_uid'), token: localStorage.getItem('eos_token') }; }
+    function clearAuth() { localStorage.removeItem('eos_uid'); localStorage.removeItem('eos_token'); }
+    function formatTime(timestamp) { const d = new Date(timestamp * 1000); return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`; }
+    function getAvatarUrl(uid, version = null) { 
+        const base = getApiBase(); 
+        if (!base) return ''; 
+        let url = `${base}${base.includes('?') ? '&' : '?'}action=get_avatar&uid=${encodeURIComponent(uid)}`; 
+        if (version) url += `&v=${version}`; 
+        return url; 
+    }
+
+    // ==================== AboutPage ====================
+    function AboutPage() {
+        const [showGithub, setShowGithub] = React.useState(false);
+        const [serverInfo, setServerInfo] = React.useState({ version: null, type: null });
+        React.useEffect(() => {
+            Promise.allSettled([
+                apiRequest('get_station_version', { method: 'GET', token: null }).catch(() => ({ error: true })),
+                apiRequest('get_server_type', { method: 'GET', token: null }).catch(() => ({ error: true }))
+            ]).then(([v, t]) => {
+                const version = v.status === 'fulfilled' && !v.value.error ? v.value.data?.version : null;
+                const type = t.status === 'fulfilled' && !t.value.error ? t.value.data?.type : null;
+                setServerInfo({ version, type });
+            });
+        }, []);
+        const clientVersion = 'b26.4.17 - HTML';
+        const serverDisplay = serverInfo.version ? `${serverInfo.version} - ${serverInfo.type || 'unknown'}/Server` : '';
+        return (
+            <Box sx={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', position:'relative', bgcolor:'background.default' }}>
+                <Box sx={{ position:'absolute', transition:'opacity 0.5s', opacity: showGithub?0:1, pointerEvents: showGithub?'none':'auto', cursor:'pointer' }} onClick={()=>setShowGithub(true)}>
+                    <svg width="120" height="120" viewBox="0 0 120 120"><circle cx="60" cy="60" r="50" fill="#1976d2" stroke="#0a4b8a" strokeWidth="2" /></svg>
+                </Box>
+                <Box sx={{ display:'flex', flexDirection:'column', alignItems:'center', transition:'opacity 0.5s', opacity: showGithub?1:0, pointerEvents: showGithub?'auto':'none' }}>
+                    <IconButton onClick={()=>window.open('https://github.com/NTdebug145/EosMesh','_blank')} sx={{ p:0, mb:1 }}>
+                        <svg width="80" height="80" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.108-.775.418-1.305.762-1.604-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    </IconButton>
+                    <Box sx={{ display:'flex', gap:1, flexWrap:'wrap', justifyContent:'center' }}>
+                        <Typography variant="body1" color="text.secondary">{clientVersion}</Typography>
+                        {serverDisplay && <Typography variant="body1" color="text.secondary">{serverDisplay}</Typography>}
+                    </Box>
+                </Box>
+            </Box>
+        );
+    }
+
+    // ==================== AuthView ====================
+    function AuthView({ onLogin }) {
+        const [isLogin, setIsLogin] = React.useState(true);
+        const [username, setUsername] = React.useState('');
+        const [password, setPassword] = React.useState('');
+        const [apiBase, setApiBaseLocal] = React.useState(getApiBase());
+        const [error, setError] = React.useState('');
+        const [loading, setLoading] = React.useState(false);
+        const handleSubmit = async (e) => {
+            e.preventDefault();
+            setError('');
+            if (!apiBase.trim()) { setError('请填写站点链接'); return; }
+            if (!username.trim() || !password.trim()) { setError('请填写用户名和密码'); return; }
+            setLoading(true);
+            try {
+                setApiBase(apiBase.trim());
+                const action = isLogin ? 'login' : 'register';
+                const data = await apiRequest(action, { body: { username: username.trim(), password } });
+                saveAuth(data.data.uid, data.data.token);
+                onLogin();
+            } catch (err) { setError(err.message); } finally { setLoading(false); }
+        };
+        return (
+            <Container maxWidth="sm" sx={{ mt: 8 }}>
+                <Paper elevation={3} sx={{ p: 4, borderRadius: 2 }}>
+                    <Typography variant="h5" align="center">{isLogin ? '登录 EosMesh' : '注册新账号'}</Typography>
+                    <Box component="form" onSubmit={handleSubmit} sx={{ mt: 2 }}>
+                        <TextField fullWidth label="站点链接 (API 地址)" variant="outlined" margin="normal" placeholder="例如: http://example.com/index.php" value={apiBase} onChange={e=>setApiBaseLocal(e.target.value)} disabled={loading} required />
+                        <TextField fullWidth label="用户名" variant="outlined" margin="normal" value={username} onChange={e=>setUsername(e.target.value)} disabled={loading} autoFocus />
+                        <TextField fullWidth label="密码" type="password" variant="outlined" margin="normal" value={password} onChange={e=>setPassword(e.target.value)} disabled={loading} />
+                        {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
+                        <Button type="submit" fullWidth variant="contained" sx={{ mt: 3, mb: 2 }} disabled={loading}>{loading ? <CircularProgress size={24} /> : (isLogin ? '登录' : '注册')}</Button>
+                        <Button fullWidth variant="text" onClick={()=>{ setIsLogin(!isLogin); setError(''); }} disabled={loading}>{isLogin ? '没有账号？立即注册' : '已有账号？立即登录'}</Button>
+                    </Box>
+                </Paper>
+            </Container>
+        );
+    }
+
+    // ==================== MessagesPage ====================
+    function MessagesPage({ fetchFriends, tabValue, setTabValue }) {
+        const { token } = getAuth();
+        const [verifyMode, setVerifyMode] = React.useState('need_verify');
+        const [requests, setRequests] = React.useState([]);
+        const [loadingRequests, setLoadingRequests] = React.useState(false);
+        const [loadingVerify, setLoadingVerify] = React.useState(false);
+        const [selectedRequest, setSelectedRequest] = React.useState(null);
+        const [confirmDialogOpen, setConfirmDialogOpen] = React.useState(false);
+        const [accepting, setAccepting] = React.useState(false);
+        const [snackbar, setSnackbarLocal] = React.useState({ open: false, message: '', severity: 'info' });
+        const showMessage = (msg, severity='info') => setSnackbarLocal({ open: true, message: msg, severity });
+        const fetchVerifySetting = async () => {
+            setLoadingVerify(true);
+            try { const data = await apiRequest('get_verify_setting', { token, method: 'GET' }); setVerifyMode(data.data.mode); } 
+            catch (err) { showMessage('获取验证方式失败: '+err.message, 'error'); } finally { setLoadingVerify(false); }
+        };
+        const saveVerifySetting = async (mode) => {
+            setLoadingVerify(true);
+            try { await apiRequest('set_verify_setting', { token, method: 'POST', body: { mode } }); setVerifyMode(mode); showMessage('验证方式已更新', 'success'); } 
+            catch (err) { showMessage('保存失败: '+err.message, 'error'); } finally { setLoadingVerify(false); }
+        };
+        const fetchRequests = async () => {
+            setLoadingRequests(true);
+            try { const data = await apiRequest('get_friend_requests', { token, method: 'GET' }); setRequests(data.data || []); } 
+            catch (err) { showMessage('获取好友申请失败: '+err.message, 'error'); } finally { setLoadingRequests(false); }
+        };
+        const acceptRequest = async (requestId) => {
+            setAccepting(true);
+            try { await apiRequest('accept_friend_request', { token, method: 'POST', body: { request_id: requestId } }); showMessage('已添加为好友', 'success'); await fetchRequests(); fetchFriends(); } 
+            catch (err) { showMessage('操作失败: '+err.message, 'error'); } finally { setAccepting(false); setConfirmDialogOpen(false); setSelectedRequest(null); }
+        };
+        React.useEffect(() => { fetchVerifySetting(); fetchRequests(); }, []);
+        return (
+            <Box sx={{ flex:1, display:'flex', flexDirection:'column', bgcolor:'background.default', overflow:'auto' }}>
+                <Box sx={{ borderBottom:1, borderColor:'divider', bgcolor:'background.paper' }}>
+                    <Tabs value={tabValue} onChange={(e,v)=>setTabValue(v)}>
+                        <Tab label="好友验证方式" /><Tab label="好友申请列表" />
+                    </Tabs>
+                </Box>
+                <Box sx={{ p:2, flex:1 }}>
+                    {tabValue === 0 && (
+                        <Paper variant="outlined" sx={{ p:2, minHeight:200 }}>
+                            <Typography variant="h6" gutterBottom>好友验证方式</Typography>
+                            <FormControl component="fieldset" disabled={loadingVerify}>
+                                <FormLabel>选择添加好友时的验证方式</FormLabel>
+                                <RadioGroup row value={verifyMode} onChange={(e)=>saveVerifySetting(e.target.value)}>
+                                    <FormControlLabel value="allow_all" control={<Radio />} label="允许任何人添加" />
+                                    <FormControlLabel value="need_verify" control={<Radio />} label="需要验证（发送申请）" />
+                                    <FormControlLabel value="deny_all" control={<Radio />} label="拒绝所有人添加" />
+                                </RadioGroup>
+                            </FormControl>
+                            {loadingVerify && <LinearProgress sx={{ mt:2 }} />}
+                        </Paper>
+                    )}
+                    {tabValue === 1 && (
+                        <Paper variant="outlined" sx={{ p:2, minHeight:200 }}>
+                            <Typography variant="h6" gutterBottom>好友申请列表</Typography>
+                            {loadingRequests && <CircularProgress size={24} sx={{ display:'block', mx:'auto', my:2 }} />}
+                            {!loadingRequests && requests.length===0 && <Typography variant="body2" color="text.secondary" align="center" sx={{ py:2 }}>暂无好友申请</Typography>}
+                            <List>
+                                {requests.map(req => (
+                                    <ListItem key={req.id} button onClick={()=>{ setSelectedRequest(req); setConfirmDialogOpen(true); }} sx={{ borderBottom:'1px solid', borderColor:'divider' }}>
+                                        <ListItemAvatar><Avatar src={getAvatarUrl(req.from_uid)}><Icon>person_add</Icon></Avatar></ListItemAvatar>
+                                        <ListItemText primary={req.from_username} secondary={req.message || '申请添加您为好友'} />
+                                    </ListItem>
+                                ))}
+                            </List>
+                        </Paper>
+                    )}
+                </Box>
+                <Dialog open={confirmDialogOpen} onClose={()=>setConfirmDialogOpen(false)}>
+                    <DialogTitle>添加好友</DialogTitle>
+                    <DialogContent><Typography>确定要添加 <strong>{selectedRequest?.from_username}</strong> 为好友吗？</Typography></DialogContent>
+                    <DialogActions><Button onClick={()=>setConfirmDialogOpen(false)}>取消</Button><Button onClick={()=>acceptRequest(selectedRequest?.id)} color="primary">{accepting?<CircularProgress size={24}/>:'确定'}</Button></DialogActions>
+                </Dialog>
+                <Snackbar open={snackbar.open} autoHideDuration={4000} onClose={()=>setSnackbarLocal({...snackbar, open:false})} anchorOrigin={{ vertical:'bottom', horizontal:'center' }}>
+                    <Alert severity={snackbar.severity} onClose={()=>setSnackbarLocal({...snackbar, open:false})}>{snackbar.message}</Alert>
+                </Snackbar>
+            </Box>
+        );
+    }
+
+    // ==================== MainApp (分页+增量轮询) ====================
+    function MainApp({ onLogout, darkMode, setDarkMode }) {
+        const { uid, token } = getAuth();
+        const [friends, setFriends] = React.useState([]);
+        const [selectedFriend, setSelectedFriend] = React.useState(null);
+        const [messages, setMessages] = React.useState([]);
+        const [inputMsg, setInputMsg] = React.useState('');
+        const [loadingFriends, setLoadingFriends] = React.useState(false);
+        const [sending, setSending] = React.useState(false);
+        const [snackbar, setSnackbar] = React.useState({ open: false, message: '', severity: 'info' });
+        const [addFriendOpen, setAddFriendOpen] = React.useState(false);
+        const [newFriendName, setNewFriendName] = React.useState('');
+        const [addingFriend, setAddingFriend] = React.useState(false);
+        const [avatarUploadOpen, setAvatarUploadOpen] = React.useState(false);
+        const [avatarFile, setAvatarFile] = React.useState(null);
+        const [uploadingAvatar, setUploadingAvatar] = React.useState(false);
+        const [userInfo, setUserInfo] = React.useState({ username: '', avatar: null });
+        const [settingsOpen, setSettingsOpen] = React.useState(false);
+        const [tempApiBase, setTempApiBase] = React.useState(getApiBase());
+        const [searchResult, setSearchResult] = React.useState(null);
+        const [searching, setSearching] = React.useState(false);
+        const [confirmAddOpen, setConfirmAddOpen] = React.useState(false);
+        const [pendingFriend, setPendingFriend] = React.useState(null);
+        const [avatarVersion, setAvatarVersion] = React.useState(Date.now());
+        const [drawerOpen, setDrawerOpen] = React.useState(false);
+        const [showAbout, setShowAbout] = React.useState(false);
+        const [showMessagesPage, setShowMessagesPage] = React.useState(false);
+        const [messagesPageTab, setMessagesPageTab] = React.useState(0);
+        const [showUserProfile, setShowUserProfile] = React.useState(false);
+        const [showFriendList, setShowFriendList] = React.useState(false);
+        const [fullUserInfo, setFullUserInfo] = React.useState(null);
+        
+        // 分页与增量相关状态
+        const [hasMore, setHasMore] = React.useState(false);
+        const [currentPage, setCurrentPage] = React.useState(1);
+        const [totalPages, setTotalPages] = React.useState(0);
+        const [loadingMessages, setLoadingMessages] = React.useState(false);
+        const [loadingMore, setLoadingMore] = React.useState(false);
+        const [latestMsgTime, setLatestMsgTime] = React.useState(0);
+        
+        const messagesRef = React.useRef([]);
+        const chatContainerRef = React.useRef(null);
+        const [shouldAutoScroll, setShouldAutoScroll] = React.useState(true);
+        const myAvatarUrl = React.useMemo(()=>getAvatarUrl(uid, avatarVersion), [uid, avatarVersion]);
+
+        // 滚动监听（自动滚动到底部 & 顶部加载更多）
+        const handleScroll = React.useCallback(() => {
+    if (!chatContainerRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+    const isNearBottom = scrollHeight - scrollTop - clientHeight < 50;
+    setShouldAutoScroll(isNearBottom);
+    
+    // 距离顶部小于 30px 且未在加载中且还有更多消息时，触发加载更多
+    if (scrollTop <= 30 && hasMore && !loadingMore && selectedFriend) {
+        loadMoreMessages();
+    }
+}, [hasMore, loadingMore, selectedFriend]);
+
+        // 滚动到底部
+        const scrollToBottom = React.useCallback(() => {
+            if (chatContainerRef.current && shouldAutoScroll) {
+                chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+            }
+        }, [shouldAutoScroll]);
+
+        // 加载历史消息（上一页）
+        const loadMoreMessages = async () => {
+    if (loadingMore || !hasMore || !selectedFriend || currentPage <= 1) return;
+    setLoadingMore(true);
+    const prevScrollHeight = chatContainerRef.current?.scrollHeight || 0;
+    const prevScrollTop = chatContainerRef.current?.scrollTop || 0;
+    const nextPage = currentPage - 1;
+    try {
+        const data = await apiRequest('get_messages', { 
+            token, method:'GET', 
+            query: { friend_uid: selectedFriend.uid, page: nextPage, limit: 20 } 
+        });
+        const olderMessages = data.data.messages || [];
+        if (olderMessages.length > 0) {
+            setMessages(prev => [...olderMessages, ...prev]);
+            setCurrentPage(nextPage);
+            setHasMore(nextPage > 1);
+            // 使用 requestAnimationFrame 确保 DOM 更新后再调整滚动位置
+            requestAnimationFrame(() => {
+                if (chatContainerRef.current) {
+                    const newScrollHeight = chatContainerRef.current.scrollHeight;
+                    chatContainerRef.current.scrollTop = newScrollHeight - prevScrollHeight + prevScrollTop;
+                }
+            });
+        } else {
+            setHasMore(false);
+        }
+    } catch(err) {
+        setSnackbar({ open:true, message:`加载历史消息失败: ${err.message}`, severity:'error' });
+    } finally {
+        setLoadingMore(false);
+    }
+};
+
+        // 轮询获取新消息（增量）
+        const pollNewMessages = React.useCallback(async () => {
+            if (!selectedFriend || latestMsgTime === 0) return;
+            try {
+                const data = await apiRequest('get_messages', { 
+                    token, method:'GET', 
+                    query: { friend_uid: selectedFriend.uid, since: latestMsgTime } 
+                });
+                const newMsgs = data.data;
+                if (newMsgs && newMsgs.length > 0) {
+                    setMessages(prev => {
+                        const merged = [...prev, ...newMsgs];
+                        // 简单去重（基于时间和发送者）
+                        const unique = [];
+                        const map = new Map();
+                        for (const msg of merged) {
+                            const key = `${msg.from}_${msg.time}`;
+                            if (!map.has(key)) map.set(key, msg);
+                        }
+                        const result = Array.from(map.values());
+                        result.sort((a,b) => a.time - b.time);
+                        return result;
+                    });
+                    const newestTime = newMsgs[newMsgs.length - 1].time;
+                    if (newestTime > latestMsgTime) setLatestMsgTime(newestTime);
+                    scrollToBottom();
+                }
+            } catch(err) {
+                console.error("轮询新消息失败", err);
+            }
+        }, [selectedFriend, latestMsgTime, token, scrollToBottom]);
+
+        // 初始化聊天：获取总消息数并加载最后一页
+        const initMessages = async (friendUid) => {
+    if (!friendUid) return;
+    setLoadingMessages(true);
+    setMessages([]);
+    setHasMore(false);
+    setCurrentPage(1);
+    setTotalPages(0);
+    setLatestMsgTime(0);
+    try {
+        // 获取总页数（直接请求最后一页，后端返回 total_pages）
+        const lastPageData = await apiRequest('get_messages', {
+            token, method:'GET',
+            query: { friend_uid: friendUid, page: 1, limit: 20 }
+        });
+        const totalPagesFromServer = lastPageData.data.total_pages || 0;
+        setTotalPages(totalPagesFromServer);
+        
+        if (totalPagesFromServer === 0) {
+            setMessages([]);
+            setHasMore(false);
+            setCurrentPage(0);
+            return;
+        }
+        
+        // 加载最后一页
+        const lastPage = totalPagesFromServer;
+        const pageData = lastPage === 1 ? lastPageData : await apiRequest('get_messages', {
+            token, method:'GET',
+            query: { friend_uid: friendUid, page: lastPage, limit: 20 }
+        });
+        
+        const loadedMsgs = pageData.data.messages || [];
+        setMessages(loadedMsgs);
+        setCurrentPage(lastPage);
+        setHasMore(lastPage > 1);
+        if (loadedMsgs.length > 0) {
+            setLatestMsgTime(loadedMsgs[loadedMsgs.length - 1].time);
+        }
+        // 滚动到底部
+        setTimeout(() => {
+            if (chatContainerRef.current) {
+                chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+            }
+            setShouldAutoScroll(true);
+        }, 100);
+    } catch(err) {
+        setSnackbar({ open:true, message:`加载消息失败: ${err.message}`, severity:'error' });
+    } finally {
+        setLoadingMessages(false);
+    }
+};
+
+        // 发送消息
+const sendMessage = async () => {
+    if (!selectedFriend || !inputMsg.trim()) return;
+    setSending(true);
+    try {
+        await apiRequest('send_message', { token, body:{ to_uid: selectedFriend.uid, content: inputMsg.trim() } });
+        setInputMsg('');
+        await pollNewMessages(); // 立即拉取新消息
+        // 强制滚动到底部（忽略 shouldAutoScroll）
+        if (chatContainerRef.current) {
+            chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+        }
+        setShouldAutoScroll(true); // 重置自动滚动标志
+    } catch(err){
+        setSnackbar({ open:true, message:`发送失败: ${err.message}`, severity:'error' });
+    } finally {
+        setSending(false);
+    }
+};
+
+        // 其他原有函数
+        const fetchUserInfo = React.useCallback(async () => { 
+            try { 
+                const data = await apiRequest('get_user_info', { method:'POST', body:{ uid }, token }); 
+                setUserInfo({ username: data.data.username, avatar: data.data.avatar }); 
+            } catch(e) { console.error(e); } 
+        }, [uid, token]);
+
+        const fetchFriends = React.useCallback(async () => { 
+            setLoadingFriends(true); 
+            try { 
+                const data = await apiRequest('get_friends', { token, method:'GET' }); 
+                setFriends(data.data||[]); 
+            } catch(err){ 
+                setSnackbar({ open:true, message:`加载好友失败: ${err.message}`, severity:'error' }); 
+            } finally { 
+                setLoadingFriends(false); 
+            } 
+        }, [token]);
+
+        const fetchFullUserInfo = React.useCallback(async () => {
+            try {
+                const data = await apiRequest('get_user_info', { method:'POST', body:{ uid }, token });
+                setFullUserInfo(data.data);
+            } catch(e) {
+                console.error("获取用户完整信息失败", e);
+                setFullUserInfo(null);
+            }
+        }, [uid, token]);
+
+        const handleAvatarUpload = async () => { 
+            if(!avatarFile) return; 
+            const formData = new FormData(); 
+            formData.append('avatar', avatarFile); 
+            setUploadingAvatar(true); 
+            try { 
+                await apiRequest('upload_avatar', { token, method:'POST', body: formData, isFormData:true }); 
+                setSnackbar({ open:true, message:'头像上传成功', severity:'success' }); 
+                setAvatarUploadOpen(false); 
+                setAvatarFile(null); 
+                fetchUserInfo(); 
+                setAvatarVersion(Date.now()); 
+            } catch(err){ 
+                setSnackbar({ open:true, message:`上传失败: ${err.message}`, severity:'error' }); 
+            } finally { 
+                setUploadingAvatar(false); 
+            } 
+        };
+
+        const handleUpdateApiBase = () => { 
+            if(!tempApiBase.trim()){ 
+                setSnackbar({ open:true, message:'站点链接不能为空', severity:'error' }); 
+                return; 
+            } 
+            setApiBase(tempApiBase.trim()); 
+            clearAuth(); 
+            setSettingsOpen(false); 
+            onLogout(); 
+            setSnackbar({ open:true, message:'站点链接已更改，请重新登录', severity:'info' }); 
+        };
+        
+        const handleLogout = () => { clearAuth(); onLogout(); };
+
+        React.useEffect(() => { fetchUserInfo(); fetchFriends(); }, [fetchUserInfo, fetchFriends]);
+        React.useEffect(() => { if (selectedFriend) initMessages(selectedFriend.uid); }, [selectedFriend]);
+        
+        // 轮询新消息（5秒）
+        React.useEffect(() => {
+            if (!selectedFriend) return;
+            const interval = setInterval(() => { pollNewMessages(); }, 5000);
+            return () => clearInterval(interval);
+        }, [selectedFriend, pollNewMessages]);
+
+        // 好友搜索防抖
+        React.useEffect(() => {
+            const timer = setTimeout(() => {
+                if(newFriendName.trim() && /^[A-Z0-9]{32}$/.test(newFriendName.trim())){
+                    setSearching(true);
+                    apiRequest('get_user_info', { method:'POST', body:{ uid: newFriendName.trim() }, token }).then(res=>setSearchResult(res.data)).catch(()=>setSearchResult(null)).finally(()=>setSearching(false));
+                } else setSearchResult(null);
+            }, 500);
+            return ()=>clearTimeout(timer);
+        }, [newFriendName, token]);
+
+        const handleConfirmAdd = () => {
+            if(!pendingFriend) return;
+            setAddingFriend(true);
+            apiRequest('add_friend', { token, body:{ username: pendingFriend.uid } }).then(data => {
+                let successMsg = data.msg.includes('Friend added') ? '好友添加成功' : (data.msg.includes('Friend request sent') ? '好友申请已发送，等待对方同意' : data.msg);
+                setSnackbar({ open:true, message:successMsg, severity:'success' });
+                setAddFriendOpen(false); setNewFriendName(''); setSearchResult(null);
+                setTimeout(fetchFriends, 500);
+            }).catch(err => { setSnackbar({ open:true, message:`添加失败: ${err.message}`, severity:'error' }); }).finally(() => { setAddingFriend(false); setConfirmAddOpen(false); setPendingFriend(null); });
+        };
+
+        React.useEffect(() => { if (showUserProfile) fetchFullUserInfo(); }, [showUserProfile, fetchFullUserInfo]);
+
+        return (
+            <Box sx={{ display:'flex', height:'100vh', flexDirection:'column' }}>
+                <AppBar position="static">
+                    <Toolbar>
+                        <IconButton color="inherit" onClick={()=>{ 
+                            if (showAbout) setShowAbout(false);
+                            else if (showMessagesPage) setShowMessagesPage(false);
+                            else if (showFriendList) {
+                                setShowFriendList(false);
+                                setShowUserProfile(true);
+                            }
+                            else if (showUserProfile) setShowUserProfile(false);
+                            else setDrawerOpen(true);
+                        }} edge="start">
+                            <Icon>{(showAbout || showMessagesPage || showUserProfile || showFriendList) ? 'arrow_back' : 'menu'}</Icon>
+                        </IconButton>
+                        <Typography variant="h6" sx={{ flexGrow:1, ml:2 }}>
+                            {showAbout ? '关于' : showMessagesPage ? '消息' : showUserProfile ? '用户' : showFriendList ? '好友列表' : 'EosMesh'}
+                        </Typography>
+                        {!showAbout && !showUserProfile && !showFriendList && <Box><IconButton color="inherit" onClick={()=>setAddFriendOpen(true)}><Icon>add</Icon></IconButton><IconButton color="inherit" onClick={()=>{ setTempApiBase(getApiBase()); setSettingsOpen(true); }}><Icon>settings</Icon></IconButton></Box>}
+                    </Toolbar>
+                </AppBar>
+                
+                {/* 修改后的侧边栏 - 参照 index.html 风格 */}
+                <Drawer anchor="left" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
+                    <Box sx={{ width: 280, pt: 2 }}>
+                        {/* 用户信息区域（与 index.html 对齐，且不显示 UID） */}
+                        <Box sx={{ display: 'flex', alignItems: 'center', px: 2, pb: 2 }}>
+                            <Avatar
+                                src={myAvatarUrl}
+                                sx={{ width: 48, height: 48, bgcolor: 'primary.main', mr: 2 }}
+                                onError={(e) => { e.target.onerror = null; e.target.src = ''; }}
+                            >
+                                {userInfo.username?.charAt(0).toUpperCase() || <Icon>account_circle</Icon>}
+                            </Avatar>
+                            <Box sx={{ flex: 1 }}>
+                                <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
+                                    {userInfo.username || uid.slice(0, 8)}
+                                </Typography>
+                                {/* 此处已移除 UID 显示行，符合用户要求 */}
+                            </Box>
+                            {/* 刷新按钮 */}
+                            <IconButton
+                                size="small"
+                                onClick={() => {
+                                    fetchFriends();
+                                    setSnackbar({ open: true, message: '好友列表已刷新', severity: 'info' });
+                                }}
+                                disabled={loadingFriends}
+                                sx={{ ml: 1 }}
+                            >
+                                <Icon>refresh</Icon>
+                            </IconButton>
+                        </Box>
+
+                        <Divider />
+
+                        {/* 导航菜单列表 */}
+                        <List sx={{ pt: 1 }}>
+                            <ListItem
+                                button
+                                onClick={() => { setShowUserProfile(true); setDrawerOpen(false); }}
+                            >
+                                <ListItemIcon><Icon>account_circle</Icon></ListItemIcon>
+                                <ListItemText primary="用户" />
+                            </ListItem>
+                            <ListItem
+                                button
+                                onClick={() => { setShowAbout(true); setDrawerOpen(false); }}
+                            >
+                                <ListItemIcon><Icon>info</Icon></ListItemIcon>
+                                <ListItemText primary="关于" />
+                            </ListItem>
+                            <ListItem
+                                button
+                                onClick={() => { setShowMessagesPage(true); setShowAbout(false); setDrawerOpen(false); }}
+                            >
+                                <ListItemIcon><Icon>message</Icon></ListItemIcon>
+                                <ListItemText primary="消息" />
+                            </ListItem>
+                        </List>
+
+                        {/* 底部提示语 */}
+                        <Box sx={{ px: 2, pb: 2, mt: 'auto' }}>
+                            <Typography variant="body2" color="text.secondary" align="center">
+                                
+                            </Typography>
+                        </Box>
+                    </Box>
+                </Drawer>
+
+                <Box sx={{ display:'flex', flex:1, overflow:'hidden' }}>
+                    {showAbout ? (
+                        <AboutPage />
+                    ) : showMessagesPage ? (
+                        <MessagesPage fetchFriends={fetchFriends} tabValue={messagesPageTab} setTabValue={setMessagesPageTab} />
+                    ) : showUserProfile ? (
+                        fullUserInfo ? (
+                            <Box sx={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', bgcolor:'background.default', p:3, overflow:'auto' }}>
+                                 <Box sx={{ position: 'relative', display: 'inline-block', mb: 2 }}>
+                                    <Avatar
+                                        src={getAvatarUrl(uid, avatarVersion)}
+                                        sx={{ width: 120, height: 120 }}
+                                        onError={(e) => { e.target.onerror = null; e.target.src = ''; }}
+                                    />
+                                    <IconButton
+                                        size="small"
+                                        sx={{
+                                            position: 'absolute',
+                                            bottom: 0,
+                                            left: 0,
+                                            bgcolor: 'background.paper',
+                                            '&:hover': { bgcolor: 'background.paper' },
+                                            boxShadow: 1,
+                                            p: 0.5
+                                        }}
+                                        onClick={() => setAvatarUploadOpen(true)}
+                                    >
+                                        <Icon fontSize="small">photo_camera</Icon>
+                                    </IconButton>
+                                </Box>
+                                <Typography variant="h5" gutterBottom>{fullUserInfo.username}</Typography>
+                                <Paper variant="outlined" sx={{ p: 3, width: '100%', maxWidth: 600, overflow: 'hidden' }}>
+                                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                        <Box sx={{ display: 'flex', alignItems: 'flex-start', flexWrap: 'wrap', gap: 1 }}>
+                                            <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>UID：</Typography>
+                                            <Box sx={{ flex: 1, wordBreak: 'break-all' }}>
+                                                <Typography variant="body1" component="span" sx={{ color: 'text.primary', mr: 1 }}>{uid}</Typography>
+                                                <Button size="small" variant="text" sx={{ fontSize: '12px', p: '0 6px', minWidth: 'auto', textTransform: 'none', color: '#1976d2' }} onClick={() => { navigator.clipboard.writeText(uid); setSnackbar({ open: true, message: 'UID复制成功', severity: 'success' }); }}>复制</Button>
+                                            </Box>
+                                        </Box>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                                            <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>注册时间：</Typography>
+                                            <Typography variant="body1" sx={{ color: 'text.primary' }}>{fullUserInfo.registered_at ? formatTime(fullUserInfo.registered_at) : '未知'}</Typography>
+                                        </Box>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                                            <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>站点ID：</Typography>
+                                            <Typography variant="body1" sx={{ color: 'text.primary', wordBreak: 'break-all' }}>{fullUserInfo.station_id || '未知'}</Typography>
+                                        </Box>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+                                            <Typography variant="body1" sx={{ fontWeight: 500, minWidth: 80 }}>发送消息数：</Typography>
+                                            <Typography variant="body1" sx={{ color: 'text.primary' }}>{fullUserInfo.message_count ?? 0}</Typography>
+                                        </Box>
+                                    </Box>
+                                </Paper>
+                                <Button variant="contained" sx={{ mt: 3 }} onClick={() => { setShowFriendList(true); setShowUserProfile(false); }}>好友列表</Button>
+                            </Box>
+                        ) : (
+                            <Box sx={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}><CircularProgress /></Box>
+                        )
+                    ) : showFriendList ? (
+                        <Box sx={{ flex:1, display:'flex', flexDirection:'column', bgcolor:'background.default' }}>
+                            <List sx={{ p:2 }}>
+                                {friends.length === 0 ? (
+                                    <Typography variant="body2" sx={{ textAlign:'center', color:'text.secondary', mt:4 }}>暂无好友，快去添加吧~</Typography>
+                                ) : (
+                                    friends.map(friend => (
+                                        <ListItem key={friend.uid} sx={{ borderRadius:2, mb:1, bgcolor:'background.paper' }}>
+                                            <ListItemAvatar><Avatar src={getAvatarUrl(friend.uid)} /></ListItemAvatar>
+                                            <ListItemText primary={friend.username} secondary={`UID: ${friend.uid}`} />
+                                        </ListItem>
+                                    ))
+                                )}
+                            </List>
+                        </Box>
+                    ) : (
+                        // 主聊天界面（带分页和增量轮询）
+                        <>
+                            <Paper elevation={0} sx={{ width:280, borderRight:'1px solid', borderColor:'divider', overflowY:'auto', bgcolor:'background.paper' }}>
+                                <List>
+                                    {friends.map(friend => (
+                                        <ListItem key={friend.uid} button selected={selectedFriend?.uid===friend.uid} onClick={()=>{setSelectedFriend(friend);}} sx={{ borderRadius:1, mx:1, mb:0.5 }}>
+                                            <ListItemAvatar><Avatar src={getAvatarUrl(friend.uid)} onError={(e)=>{ e.target.onerror=null; e.target.src=''; }}><Icon>person</Icon></Avatar></ListItemAvatar>
+                                            <ListItemText primary={friend.username} />
+                                        </ListItem>
+                                    ))}
+                                    {friends.length===0 && !loadingFriends && <Typography variant="body2" sx={{ p:2, textAlign:'center', color:'text.secondary' }}>暂无好友，点击 + 添加</Typography>}
+                                    {loadingFriends && <CircularProgress sx={{ display:'block', mx:'auto', my:2 }} />}
+                                </List>
+                            </Paper>
+                            <Box sx={{ flex:1, display:'flex', flexDirection:'column', bgcolor:'background.default', position:'relative', minWidth: 0, maxWidth: '100%' }}>
+                                {selectedFriend ? (
+                                    <>
+                                        <Box sx={{ p:2, borderBottom:'1px solid', borderColor:'divider', bgcolor:'background.paper', display:'flex', alignItems:'center' }}>
+                                            <Avatar src={getAvatarUrl(selectedFriend.uid)} sx={{ mr:1.5, width:36, height:36 }} onError={(e)=>{ e.target.onerror=null; e.target.src=''; }}><Icon>person</Icon></Avatar>
+                                            <Typography variant="h6">{selectedFriend.username}</Typography>
+                                        </Box>
+                                        {loadingMessages && <LinearProgress sx={{ position:'absolute', top:0, left:0, right:0, zIndex:1 }} />}
+                                        <Box className="chat-messages" ref={chatContainerRef} onScroll={handleScroll}>
+                                            {loadingMore && <div className="loading-more-indicator">加载更早消息...</div>}
+                                            {messages.length===0 ? <Typography variant="body2" sx={{ textAlign:'center', color:'text.secondary', mt:4 }}>暂无消息，发送一条吧~</Typography> : messages.map((msg,idx)=>(
+                                                <Box key={`${msg.from}_${msg.time}_${idx}`} sx={{ display:'flex', justifyContent:msg.from===uid?'flex-end':'flex-start', mb:1 }}>
+                                                    <div className={`message-bubble ${msg.from===uid?'message-mine':'message-other'}`}>
+                                                        <Typography variant="body2">{msg.content}</Typography>
+                                                        <Typography variant="caption" className="message-time" sx={{ display:'block', textAlign:'right', color:msg.from===uid?'#ddd':'#666' }}>{formatTime(msg.time)}</Typography>
+                                                    </div>
+                                                </Box>
+                                            ))}
+                                        </Box>
+                                        <Box sx={{ p:2, bgcolor:'background.paper', borderTop:'1px solid', borderColor:'divider', display:'flex' }}>
+                                            <TextField fullWidth variant="outlined" placeholder="输入消息..." value={inputMsg} onChange={e=>setInputMsg(e.target.value)} onKeyPress={e=>e.key==='Enter'&&sendMessage()} disabled={sending} size="small" />
+                                            <IconButton color="primary" onClick={sendMessage} disabled={sending||!inputMsg.trim()}><Icon>send</Icon></IconButton>
+                                        </Box>
+                                    </>
+                                ) : <Box sx={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%' }}><Typography variant="h6" color="text.secondary">选择一个好友开始聊天</Typography></Box>}
+                            </Box>
+                        </>
+                    )}
+                </Box>
+                {/* Dialog 部分保持不变 */}
+                <Dialog open={addFriendOpen} onClose={()=>{ setAddFriendOpen(false); setNewFriendName(''); setSearchResult(null); }}>
+                    <DialogTitle>添加好友</DialogTitle>
+                    <DialogContent>
+                        <TextField autoFocus margin="dense" label="对方UID或用户名" helperText="请输入32位UID（大写字母数字组合）或用户名" fullWidth variant="outlined" value={newFriendName} onChange={e=>setNewFriendName(e.target.value)} disabled={addingFriend} />
+                        {searching && <CircularProgress size={24} sx={{ mt:1 }} />}
+                        {searchResult && !searching && <Box className="search-result" onClick={()=>{ setPendingFriend({ uid: searchResult.uid, username: searchResult.username }); setConfirmAddOpen(true); }}><Avatar src={getAvatarUrl(searchResult.uid)} sx={{ mr:2 }}><Icon>person</Icon></Avatar><Box><Typography variant="body1">{searchResult.username}</Typography><Typography variant="caption" color="text.secondary">{searchResult.uid}</Typography></Box></Box>}
+                    </DialogContent>
+                    <DialogActions><Button onClick={()=>{ setAddFriendOpen(false); setNewFriendName(''); setSearchResult(null); }}>取消</Button></DialogActions>
+                </Dialog>
+                <Dialog open={confirmAddOpen} onClose={()=>setConfirmAddOpen(false)}><DialogTitle>添加好友</DialogTitle><DialogContent><Typography>确定要添加 <strong>{pendingFriend?.username}</strong> 为好友吗？</Typography></DialogContent><DialogActions><Button onClick={()=>setConfirmAddOpen(false)}>取消</Button><Button onClick={handleConfirmAdd} color="primary" disabled={addingFriend}>{addingFriend?<CircularProgress size={24}/>:'确定'}</Button></DialogActions></Dialog>
+                <Dialog open={avatarUploadOpen} onClose={()=>setAvatarUploadOpen(false)}><DialogTitle>上传头像</DialogTitle><DialogContent><input type="file" accept="image/jpeg,image/png,image/gif" onChange={e=>setAvatarFile(e.target.files[0])} style={{ marginTop:8 }} /></DialogContent><DialogActions><Button onClick={()=>setAvatarUploadOpen(false)}>取消</Button><Button onClick={handleAvatarUpload} disabled={!avatarFile||uploadingAvatar}>{uploadingAvatar?<CircularProgress size={24}/>:'上传'}</Button></DialogActions></Dialog>
+                <Dialog open={settingsOpen} onClose={()=>setSettingsOpen(false)}><DialogTitle>设置</DialogTitle><DialogContent><TextField fullWidth label="站点链接 (API 地址)" variant="outlined" margin="dense" placeholder="例如: http://example.com/index.php" value={tempApiBase} onChange={e=>setTempApiBase(e.target.value)} /><Typography variant="body2" color="text.secondary" sx={{ mt:1, mb:2 }}>修改后将清除当前登录状态，需要重新登录。</Typography><FormControlLabel control={<Switch checked={darkMode} onChange={e=>setDarkMode(e.target.checked)} color="primary" />} label="暗色模式" sx={{ mb:2 }} /><Button fullWidth variant="outlined" color="error" onClick={handleLogout} sx={{ mt:1 }}>退出登录</Button></DialogContent><DialogActions><Button onClick={()=>setSettingsOpen(false)}>取消</Button><Button onClick={handleUpdateApiBase} color="primary">保存站点链接</Button></DialogActions></Dialog>
+                <Snackbar open={snackbar.open} autoHideDuration={4000} onClose={()=>setSnackbar({...snackbar, open:false})} anchorOrigin={{ vertical:'bottom', horizontal:'center' }}><Alert severity={snackbar.severity} onClose={()=>setSnackbar({...snackbar, open:false})}>{snackbar.message}</Alert></Snackbar>
+            </Box>
+        );
+    }
+
+    // ==================== App ====================
+    function App() {
+        const [isLoggedIn, setIsLoggedIn] = React.useState(false);
+        const [loading, setLoading] = React.useState(true);
+        const [darkMode, setDarkMode] = React.useState(getDarkModePreference());
+        const theme = React.useMemo(() => createTheme({ palette: { mode: darkMode ? 'dark' : 'light', primary: { main: '#1976d2' }, secondary: { main: '#dc004e' } } }), [darkMode]);
+        React.useEffect(() => { setDarkModePreference(darkMode); }, [darkMode]);
+        React.useEffect(() => {
+            const apiBase = getApiBase();
+            const { uid, token } = getAuth();
+            if (apiBase && uid && token) {
+                apiRequest('get_friends', { token, method: 'GET' }).then(() => setIsLoggedIn(true)).catch(() => { clearAuth(); setIsLoggedIn(false); }).finally(() => setLoading(false));
+            } else setLoading(false);
+        }, []);
+        if (loading) return <Box sx={{ display:'flex', justifyContent:'center', alignItems:'center', height:'100vh' }}><CircularProgress /></Box>;
+        return (
+            <ThemeProvider theme={theme}>
+                <CssBaseline />
+                {isLoggedIn ? <MainApp onLogout={()=>setIsLoggedIn(false)} darkMode={darkMode} setDarkMode={setDarkMode} /> : <AuthView onLogin={()=>setIsLoggedIn(true)} />}
+            </ThemeProvider>
+        );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+</script>
+</body>
+</html>
