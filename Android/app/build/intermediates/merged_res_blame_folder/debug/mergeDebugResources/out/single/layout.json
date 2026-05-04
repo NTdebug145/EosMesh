@@ -1,0 +1,74 @@
+[
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_user.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_user.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/item_friend_request.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/item_friend_request.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_chat.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_chat.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_messages.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_messages.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_register.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_register.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_main.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_main.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/layout_tab_requests.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/layout_tab_requests.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/item_message_other.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/item_message_other.xml"
+    },
+    {
+        "merged": "com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_about.xml",
+        "source": "com.nt.eosmesh.app-main-40:/layout/activity_about.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_about.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_about.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_auth.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_auth.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/dialog_add_friend.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/dialog_add_friend.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/item_friend_list.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/item_friend_list.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/layout_tab_verify.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/layout_tab_verify.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_blank.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_blank.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/activity_friend_list.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/activity_friend_list.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/drawer_header.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/drawer_header.xml"
+    },
+    {
+        "merged": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-mergeDebugResources-37:/layout/item_message_mine.xml",
+        "source": "/data/data/com.tom.rv2ide/files/home/.gradle/daemon/9.0.0/com.nt.eosmesh.app-main-40:/layout/item_message_mine.xml"
+    }
+]

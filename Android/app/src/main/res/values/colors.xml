@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 应用图标背景 -->
+    <color name="ic_launcher_background">#1976D2</color>
+    
+    <!-- 新配色方案 -->
+    <color name="toolbar_background">#151515</color>           <!-- 顶栏颜色 -->
+    <color name="background_dark">#303030</color>              <!-- 背景颜色 -->
+    <color name="surface_dark">#252525</color>                <!-- 卡片背景 -->
+    <color name="surface_light">#3A3A3A</color>               <!-- 输入框背景 -->
+    <color name="text_primary_dark">#C3C3C3</color>           <!-- 主字体颜色 -->
+    <color name="text_secondary_dark">#9E9E9E</color>         <!-- 次要字体颜色 -->
+    <color name="divider_dark">#404040</color>                <!-- 分割线 -->
+    <color name="primary_blue">#1976D2</color>                <!-- 主题蓝色 -->
+    <color name="primary_blue_dark">#1565C0</color>           <!-- 深蓝色 -->
+    <color name="bubble_mine">#1976D2</color>                 <!-- 我的消息气泡 -->
+    <color name="bubble_other">#424242</color>               <!-- 对方消息气泡 -->
+    
+    <!-- 错误颜色 -->
+    <color name="colorError">#CF6679</color>
+    
+    <!-- 次要颜色（退出按钮） -->
+    <color name="colorSecondary">#DC004E</color>
+    <!-- 导航菜单颜色 -->
+<color name="nav_item_text">#C3C3C3</color>
+<color name="nav_item_icon">#C3C3C3</color>
+</resources>
