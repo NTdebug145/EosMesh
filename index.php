@@ -1,7 +1,9 @@
 <?php
 /**
- * EosMesh - 去中心化API（无文件锁版本）
+ * EosMesh - 去中心化API（增强版：支持文件上传/下载，分块上传，大小限制）
  * 加入 token 刷新机制：有效期5分钟，每4分钟可刷新一次
+ * 
+ * 安全改进：彻底移除全局索引文件，文件路径动态扫描，不存储任何直链
  */
 
 if (ob_get_level() == 0) ob_start();
@@ -10,6 +12,11 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/data/error.log');
+
+ini_set('upload_max_filesize', '100M');
+ini_set('post_max_size', '110M');
+ini_set('max_execution_time', 3600);
+ini_set('memory_limit', '512M');
 
 set_error_handler(function($severity, $message, $file, $line) {
     if (!(error_reporting() & $severity)) return false;
@@ -36,7 +43,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 header('Content-Type: application/json; charset=utf-8');
 
-
 define('STATION_VERSION', 'b26.4.30');
 define('SERVER_TYPE', 'php');
 define('ROOT_DIR', __DIR__);
@@ -54,16 +60,35 @@ foreach ([DATA_DIR, USER_DIR, CHAT_DIR, AVATAR_DIR] as $dir) {
 
 if (!file_exists(CONFIG_FILE)) {
     $stationID = generateRandomString(16);
-    file_put_contents(CONFIG_FILE, "[station]\nstationID={$stationID}\nstationNumberDaysInformationStored=3\nstationWhetherCompletelyDeleteUserData=true\n");
+    $defaultConfig = "[station]\nstationID={$stationID}\nstationNumberDaysInformationStored=3\nstationWhetherCompletelyDeleteUserData=true\nuploadFileSizeLimitGB=1\n";
+    file_put_contents(CONFIG_FILE, $defaultConfig);
 }
 $fullConfig = parse_ini_file(CONFIG_FILE, true);
 $config = $fullConfig['station'];
 $stationID = $config['stationID'];
 $daysToKeep = (int)$config['stationNumberDaysInformationStored'];
 $completelyDelete = filter_var($config['stationWhetherCompletelyDeleteUserData'], FILTER_VALIDATE_BOOLEAN);
+$uploadFileSizeLimitGB = isset($config['uploadFileSizeLimitGB']) ? (int)$config['uploadFileSizeLimitGB'] : 1;
+if ($uploadFileSizeLimitGB <= 0) $uploadFileSizeLimitGB = 1;
+$maxFileSizeBytes = $uploadFileSizeLimitGB * 1024 * 1024 * 1024;
 
 $usernameMapFile = DATA_DIR . '/username_map.json';
 if (!file_exists($usernameMapFile)) file_put_contents($usernameMapFile, json_encode([]));
+
+// 文件存储相关常量（彻底移除全局索引）
+define('FILES_BASE_DIR', DATA_DIR . '/files/' . $stationID);
+define('CHUNK_TMP_DIR', DATA_DIR . '/chunk_tmp');
+define('DOWNLOAD_TOKEN_TTL', 3600);
+
+foreach ([FILES_BASE_DIR, CHUNK_TMP_DIR] as $dir) {
+    if (!file_exists($dir)) mkdir($dir, 0755, true);
+}
+
+// 删除遗留的 file_index.json（如果存在）
+$legacyIndex = DATA_DIR . '/file_index.json';
+if (file_exists($legacyIndex)) {
+    unlink($legacyIndex);
+}
 
 function generateRandomString($length) {
     $chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -121,9 +146,6 @@ function getUidByUsername($username) {
     return $map[$username] ?? null;
 }
 
-/**
- * 生成具有 5 分钟有效期的 Token
- */
 function generateToken($uid, $passwordHash) {
     global $stationID;
     $expires = time() + 300;
@@ -132,9 +154,6 @@ function generateToken($uid, $passwordHash) {
     return $uid . ':' . $expires . ':' . $signature;
 }
 
-/**
- * 统一认证：验证 Token 格式、有效期、签名
- */
 function authenticate() {
     global $stationID;
     $headers = getallheaders();
@@ -167,36 +186,385 @@ function sendResponse($code, $message, $data = null) {
     exit;
 }
 
-$action = $_GET['action'] ?? '';
-try {
-    switch ($action) {
-        case 'register': register(); break;
-        case 'login': login(); break;
-        case 'refresh_token': refreshToken(); break;   // 新增：刷新token
-        case 'upload_avatar': $user = authenticate(); uploadAvatar($user); break;
-        case 'add_friend': $user = authenticate(); addFriend($user); break;
-        case 'handle_friend_request': $user = authenticate(); handleFriendRequest($user); break;
-        case 'send_message': $user = authenticate(); sendMessage($user); break;
-        case 'get_messages': $user = authenticate(); getMessages($user); break;
-        case 'delete_account': $user = authenticate(); deleteAccount($user); break;
-        case 'get_station_version': getStationVersion(); break;
-        case 'get_server_type': getServerType(); break;
-        case 'get_verify_setting': $user = authenticate(); getVerifySetting($user); break;
-        case 'set_verify_setting': $user = authenticate(); setVerifySetting($user); break;
-        case 'get_friend_requests': $user = authenticate(); getFriendRequests($user); break;
-        case 'accept_friend_request': $user = authenticate(); acceptFriendRequest($user); break;
-        case 'get_avatar': getAvatar(); break;
-        case 'get_friends': $user = authenticate(); getFriends($user); break;
-        case 'get_user_info': getUserInfo(); break;
-        case 'get_station_id': sendResponse(200, 'Station ID retrieved', ['station_id' => $GLOBALS['stationID']]); break;
-        case 'get_friend_avatar_img_md5': $user = authenticate(); getFriendAvatarImgMd5($user); break;
-        default: sendResponse(400, 'Invalid action');
+// ---------------------- 动态扫描（无任何索引文件）---------------------
+$fileLocationCache = [];
+
+function findFileLocation($fileId) {
+    global $fileLocationCache;
+    if (isset($fileLocationCache[$fileId])) {
+        return $fileLocationCache[$fileId];
     }
-} catch (Exception $e) {
-    sendResponse(500, 'Server error: ' . $e->getMessage());
+
+    $fileIdDir = FILES_BASE_DIR . '/' . $fileId;
+    if (!is_dir($fileIdDir)) return null;
+
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($fileIdDir, RecursiveDirectoryIterator::SKIP_DOTS)
+    );
+    foreach ($iterator as $file) {
+        if ($file->getFilename() === 'fileinfo.json') {
+            $metaPath = $file->getPathname();
+            $meta = json_decode(file_get_contents($metaPath), true);
+            if (is_array($meta) && isset($meta['file_id']) && $meta['file_id'] === $fileId) {
+                $physicalPath = $file->getPath() . '/' . $meta['md5'];
+                if (file_exists($physicalPath)) {
+                    $result = [
+                        'meta_path' => $metaPath,
+                        'physical_path' => $physicalPath,
+                        'meta' => $meta
+                    ];
+                    $fileLocationCache[$fileId] = $result;
+                    return $result;
+                }
+            }
+        }
+    }
+    return null;
 }
 
-// ---------------------- 功能实现 ----------------------
+function getFileMeta($fileId) {
+    $loc = findFileLocation($fileId);
+    return $loc ? $loc['meta'] : null;
+}
+
+function updateFileMeta($fileId, $meta) {
+    $loc = findFileLocation($fileId);
+    if (!$loc) return false;
+    $meta['file_id'] = $fileId;
+    return file_put_contents($loc['meta_path'], json_encode($meta)) !== false;
+}
+
+function generateDownloadToken($fileId, $userId) {
+    global $stationID;
+    $expires = time() + DOWNLOAD_TOKEN_TTL;
+    // 只使用 fileId 和过期时间
+    $data = $fileId . ':' . $expires;
+    $signature = hash_hmac('sha256', $data, $stationID);
+    return $fileId . ':' . $expires . ':' . $signature;
+}
+
+function verifyDownloadToken($token, $fileId) {
+    global $stationID;
+    $parts = explode(':', $token);
+    if (count($parts) != 3) return false;
+    list($tokenFileId, $expires, $signature) = $parts;
+    if ($tokenFileId !== $fileId || (int)$expires < time()) return false;
+    $data = $fileId . ':' . $expires;
+    $expected = hash_hmac('sha256', $data, $stationID);
+    return hash_equals($expected, $signature);
+}
+
+function storePhysicalFile($fileId, $userId, $tmpPath, $fileMd5, $originalName, $fileSize = null) {
+    global $maxFileSizeBytes;
+    if ($fileSize === null) $fileSize = filesize($tmpPath);
+    if ($fileSize > $maxFileSizeBytes) return false;
+    
+    $date = getdate();
+    $year = $date['year'];
+    $month = str_pad($date['mon'], 2, '0', STR_PAD_LEFT);
+    $day = str_pad($date['mday'], 2, '0', STR_PAD_LEFT);
+    $randomDir = generateRandomString(8);
+    $targetDir = FILES_BASE_DIR . '/' . $fileId . '/' . $userId . '/' . $year . '/' . $month . '/' . $day . '/' . $randomDir;
+    if (!is_dir($targetDir)) mkdir($targetDir, 0755, true);
+    
+    $physicalFile = $targetDir . '/' . $fileMd5;
+    $metaFile = $targetDir . '/fileinfo.json';
+    
+    if (!move_uploaded_file($tmpPath, $physicalFile)) return false;
+    
+    $meta = [
+        'file_id' => $fileId,
+        'original_name' => basename($originalName),
+        'md5' => $fileMd5,
+        'size' => $fileSize,
+        'download_count' => 0,
+        'allow_download' => true,
+        'uploader_uid' => $userId,
+        'upload_time' => time()
+    ];
+    file_put_contents($metaFile, json_encode($meta));
+    return true;
+}
+
+// ---------------------- 文件上传功能 ----------------------
+function uploadFile($user) {
+    global $maxFileSizeBytes;
+    if (!isset($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+        sendResponse(400, 'Missing file or upload error');
+    }
+    $file = $_FILES['file'];
+    $originalName = $file['name'];
+    $tmpPath = $file['tmp_name'];
+    $fileSize = $file['size'];
+    
+    if ($fileSize > $maxFileSizeBytes) {
+        sendResponse(413, 'File size exceeds limit (' . ($maxFileSizeBytes / 1024 / 1024 / 1024) . ' GB)');
+    }
+    
+    $fileMd5 = md5_file($tmpPath);
+    $fileId = generateRandomString(16);
+    if (!storePhysicalFile($fileId, $user['id'], $tmpPath, $fileMd5, $originalName, $fileSize)) {
+        sendResponse(500, 'Failed to save file');
+    }
+    
+    updateUserData($user['id'], function($u) use ($fileId) {
+        if (!isset($u['files'])) $u['files'] = [];
+        $u['files'][] = $fileId;
+        return $u;
+    });
+    
+    sendResponse(200, 'File uploaded successfully', ['file_id' => $fileId]);
+}
+
+function multipartInit($user) {
+    global $maxFileSizeBytes;
+    $input = json_decode(file_get_contents('php://input'), true);
+    $originalName = $input['original_name'] ?? '';
+    $totalChunks = (int)($input['total_chunks'] ?? 0);
+    $chunkSize = (int)($input['chunk_size'] ?? 0);
+    if (!$originalName || $totalChunks <= 0 || $chunkSize <= 0) {
+        sendResponse(400, 'Missing parameters: original_name, total_chunks, chunk_size');
+    }
+    $totalSize = $totalChunks * $chunkSize;
+    if ($totalSize > $maxFileSizeBytes) {
+        sendResponse(413, 'Total file size exceeds limit (' . ($maxFileSizeBytes / 1024 / 1024 / 1024) . ' GB)');
+    }
+    
+    $uploadId = generateRandomString(32);
+    $tmpDir = CHUNK_TMP_DIR . '/' . $uploadId;
+    mkdir($tmpDir, 0755, true);
+    
+    $session = [
+        'upload_id' => $uploadId,
+        'user_id' => $user['id'],
+        'original_name' => $originalName,
+        'total_chunks' => $totalChunks,
+        'chunk_size' => $chunkSize,
+        'received_chunks' => [],
+        'created_at' => time()
+    ];
+    file_put_contents($tmpDir . '/session.json', json_encode($session));
+    sendResponse(200, 'Multipart upload initialized', ['upload_id' => $uploadId]);
+}
+
+function multipartUpload($user) {
+    $uploadId = $_POST['upload_id'] ?? '';
+    $partNumber = (int)($_POST['part_number'] ?? 0);
+    if (!$uploadId || $partNumber <= 0 || !isset($_FILES['chunk'])) {
+        sendResponse(400, 'Missing upload_id, part_number or chunk file');
+    }
+    
+    if ($_FILES['chunk']['error'] !== UPLOAD_ERR_OK) {
+        $errors = [
+            UPLOAD_ERR_INI_SIZE => '文件超过服务器 upload_max_filesize 限制',
+            UPLOAD_ERR_FORM_SIZE => '文件超过表单 MAX_FILE_SIZE 限制',
+            UPLOAD_ERR_PARTIAL => '文件只有部分被上传',
+            UPLOAD_ERR_NO_FILE => '没有文件被上传',
+            UPLOAD_ERR_NO_TMP_DIR => '找不到临时文件夹',
+            UPLOAD_ERR_CANT_WRITE => '文件写入失败',
+            UPLOAD_ERR_EXTENSION => 'PHP扩展阻止了文件上传',
+        ];
+        $errorMsg = $errors[$_FILES['chunk']['error']] ?? '未知上传错误';
+        sendResponse(400, 'Chunk upload error: ' . $errorMsg);
+    }
+    
+    $tmpDir = CHUNK_TMP_DIR . '/' . $uploadId;
+    $sessionFile = $tmpDir . '/session.json';
+    if (!file_exists($sessionFile)) sendResponse(404, 'Upload session not found');
+    
+    $session = json_decode(file_get_contents($sessionFile), true);
+    if ($session['user_id'] !== $user['id']) sendResponse(403, 'Permission denied');
+    
+    $chunkFile = $tmpDir . '/' . $partNumber . '.part';
+    if (!move_uploaded_file($_FILES['chunk']['tmp_name'], $chunkFile)) {
+        sendResponse(500, 'Failed to save chunk');
+    }
+    
+    $session['received_chunks'][] = $partNumber;
+    file_put_contents($sessionFile, json_encode($session));
+    sendResponse(200, 'Chunk uploaded successfully');
+}
+
+function multipartComplete($user) {
+    global $maxFileSizeBytes;
+    $input = json_decode(file_get_contents('php://input'), true);
+    $uploadId = $input['upload_id'] ?? '';
+    if (!$uploadId) sendResponse(400, 'Missing upload_id');
+    
+    $tmpDir = CHUNK_TMP_DIR . '/' . $uploadId;
+    $sessionFile = $tmpDir . '/session.json';
+    if (!file_exists($sessionFile)) sendResponse(404, 'Upload session not found');
+    
+    $session = json_decode(file_get_contents($sessionFile), true);
+    if ($session['user_id'] !== $user['id']) sendResponse(403, 'Permission denied');
+    
+    $expected = range(1, $session['total_chunks']);
+    $received = $session['received_chunks'];
+    sort($received);
+    if ($expected !== $received) {
+        sendResponse(400, 'Missing chunks, cannot complete');
+    }
+    
+    // 合并分块
+    $mergedTmp = tempnam(sys_get_temp_dir(), 'merge_');
+    $out = fopen($mergedTmp, 'wb');
+    $totalSize = 0;
+    for ($i = 1; $i <= $session['total_chunks']; $i++) {
+        $partFile = $tmpDir . '/' . $i . '.part';
+        $totalSize += filesize($partFile);
+        if ($totalSize > $maxFileSizeBytes) {
+            fclose($out);
+            unlink($mergedTmp);
+            sendResponse(413, 'Total file size exceeds limit');
+        }
+        $in = fopen($partFile, 'rb');
+        stream_copy_to_stream($in, $out);
+        fclose($in);
+        unlink($partFile);
+    }
+    fclose($out);
+    
+    if ($totalSize > $maxFileSizeBytes) {
+        unlink($mergedTmp);
+        sendResponse(413, 'Total file size exceeds limit');
+    }
+    
+    $fileMd5 = md5_file($mergedTmp);
+    $fileId = generateRandomString(16);
+    
+    $date = getdate();
+    $year = $date['year'];
+    $month = str_pad($date['mon'], 2, '0', STR_PAD_LEFT);
+    $day = str_pad($date['mday'], 2, '0', STR_PAD_LEFT);
+    $randomDir = generateRandomString(8);
+    $targetDir = FILES_BASE_DIR . '/' . $fileId . '/' . $user['id'] . '/' . $year . '/' . $month . '/' . $day . '/' . $randomDir;
+    if (!is_dir($targetDir)) mkdir($targetDir, 0755, true);
+    
+    $physicalFile = $targetDir . '/' . $fileMd5;
+    $metaFile = $targetDir . '/fileinfo.json';
+    
+    if (!rename($mergedTmp, $physicalFile)) {
+        if (file_exists($mergedTmp)) unlink($mergedTmp);
+        sendResponse(500, 'Failed to save merged file');
+    }
+    
+    $meta = [
+        'file_id' => $fileId,
+        'original_name' => basename($session['original_name']),
+        'md5' => $fileMd5,
+        'size' => $totalSize,
+        'download_count' => 0,
+        'allow_download' => true,
+        'uploader_uid' => $user['id'],
+        'upload_time' => time()
+    ];
+    file_put_contents($metaFile, json_encode($meta));
+    
+    // 清理临时目录
+    array_map('unlink', glob($tmpDir . '/*'));
+    rmdir($tmpDir);
+    
+    updateUserData($user['id'], function($u) use ($fileId) {
+        if (!isset($u['files'])) $u['files'] = [];
+        $u['files'][] = $fileId;
+        return $u;
+    });
+    
+    sendResponse(200, 'File uploaded successfully (multipart)', ['file_id' => $fileId]);
+}
+
+function getFileInfo($user) {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $fileId = $input['file_id'] ?? $_GET['file_id'] ?? '';
+    if (!$fileId) sendResponse(400, 'Missing file_id');
+    
+    $meta = getFileMeta($fileId);
+    if (!$meta) sendResponse(404, 'File not found');
+    
+    if ($meta['uploader_uid'] === $user['id']) {
+        sendResponse(200, 'File info retrieved', [
+            'file_id' => $fileId,
+            'original_name' => $meta['original_name'],
+            'md5' => $meta['md5'],
+            'size' => $meta['size'],
+            'download_count' => $meta['download_count'],
+            'allow_download' => $meta['allow_download'],
+            'upload_time' => $meta['upload_time']
+        ]);
+    } else {
+        sendResponse(200, 'File info retrieved (public)', [
+            'file_id' => $fileId,
+            'original_name' => $meta['original_name'],
+            'size' => $meta['size'],
+            'allow_download' => $meta['allow_download']
+        ]);
+    }
+}
+
+function setFileDownloadable($user) {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $fileId = $input['file_id'] ?? '';
+    $allowDownload = (bool)($input['allow_download'] ?? false);
+    if (!$fileId) sendResponse(400, 'Missing file_id');
+    
+    $meta = getFileMeta($fileId);
+    if (!$meta) sendResponse(404, 'File not found');
+    if ($meta['uploader_uid'] !== $user['id']) sendResponse(403, 'Only uploader can change this setting');
+    
+    $meta['allow_download'] = $allowDownload;
+    if (updateFileMeta($fileId, $meta)) {
+        sendResponse(200, 'Download permission updated');
+    } else {
+        sendResponse(500, 'Failed to update');
+    }
+}
+
+function generateDownloadUrl($user) {
+    $input = json_decode(file_get_contents('php://input'), true);
+    $fileId = $input['file_id'] ?? '';
+    if (!$fileId) sendResponse(400, 'Missing file_id');
+    
+    $meta = getFileMeta($fileId);
+    if (!$meta) sendResponse(404, 'File not found');
+    if (!$meta['allow_download'] && $meta['uploader_uid'] !== $user['id']) {
+        sendResponse(403, 'File is not allowed to download');
+    }
+    
+    $token = generateDownloadToken($fileId, $user['id']);
+    $downloadUrl = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://')
+                   . $_SERVER['HTTP_HOST']
+                   . rtrim(dirname($_SERVER['SCRIPT_NAME']), '/')
+                   . '/index.php?action=get_file&fid=' . urlencode($fileId)
+                   . '&dt=' . urlencode($token);
+    sendResponse(200, 'Download link generated', ['url' => $downloadUrl, 'expires_in' => DOWNLOAD_TOKEN_TTL]);
+}
+
+function getFile() {
+    $fileId = $_GET['fid'] ?? '';
+    $token = $_GET['dt'] ?? '';
+    if (!$fileId || !$token) sendResponse(400, 'Missing fid or dt');
+    
+    if (!verifyDownloadToken($token, $fileId)) sendResponse(403, 'Invalid or expired download token');
+    
+    $loc = findFileLocation($fileId);
+    if (!$loc) sendResponse(404, 'File not found');
+    $meta = $loc['meta'];
+    
+    // 增加下载次数
+    $meta['download_count']++;
+    updateFileMeta($fileId, $meta);
+    
+    $physicalPath = $loc['physical_path'];
+    if (!file_exists($physicalPath)) sendResponse(404, 'File data missing');
+    
+    header('Content-Type: application/octet-stream');
+    header('Content-Disposition: attachment; filename="' . addslashes($meta['original_name']) . '"');
+    header('Content-Length: ' . $meta['size']);
+    readfile($physicalPath);
+    exit;
+}
+
+// ---------------------- 原有功能（保持不变）---------------------
 function register() {
     global $stationID;
     $input = json_decode(file_get_contents('php://input'), true);
@@ -225,7 +593,8 @@ function register() {
         'avatar_md5' => null,
         'avatar_ext' => null,
         'deleted' => false,
-        'last_refresh_time' => 0,   // 新增：上次刷新token的时间戳
+        'last_refresh_time' => 0,
+        'files' => [],
     ];
     
     if (!saveUserData($user)) sendResponse(500, 'Failed to save user');
@@ -251,28 +620,18 @@ function login() {
     sendResponse(200, 'Login successful', ['uid' => $user['id'], 'token' => $token]);
 }
 
-/**
- * 刷新 token（需要当前 token 有效，且距离上次刷新超过 4 分钟）
- */
 function refreshToken() {
-    // 先验证当前 token 是否有效（未过期且签名正确）
-    $user = authenticate();  // 如果 token 过期或无效会直接返回错误
-
+    $user = authenticate();
     $now = time();
     $last = $user['last_refresh_time'] ?? 0;
-    if ($now - $last < 240) {  // 4 分钟内不能再次刷新
+    if ($now - $last < 240) {
         sendResponse(429, 'Token refresh too frequent, please wait ' . (240 - ($now - $last)) . ' seconds');
     }
-
-    // 生成新 token
     $newToken = generateToken($user['id'], $user['password']);
-
-    // 更新用户的 last_refresh_time
     updateUserData($user['id'], function($u) use ($now) {
         $u['last_refresh_time'] = $now;
         return $u;
     });
-
     sendResponse(200, 'Token refreshed', ['token' => $newToken]);
 }
 
@@ -652,6 +1011,7 @@ function getUserInfo() {
         'station_id' => $user['station_id'],
         'friend_verify' => $user['friend_verify'],
         'message_count' => $user['message_count'] ?? 0
+        //'files' => $user['files'] ?? []
     ]);
 }
 
@@ -667,5 +1027,60 @@ function getFriendAvatarImgMd5($user) {
         }
     }
     sendResponse(200, 'Friend avatar md5 list', $result);
+}
+
+function getStationConfig() {
+    global $uploadFileSizeLimitGB, $maxFileSizeBytes;
+    sendResponse(200, 'OK', [
+        'upload_limit_gb' => $uploadFileSizeLimitGB,
+        'upload_limit_bytes' => $maxFileSizeBytes
+    ]);
+}
+
+function getUserFiles($user) {
+    $files = $user['files'] ?? [];
+    sendResponse(200, 'User files retrieved', ['files' => $files]);
+}
+
+// ---------------------- 路由分发 ----------------------
+$action = $_GET['action'] ?? '';
+try {
+    switch ($action) {
+        case 'register': register(); break;
+        case 'login': login(); break;
+        case 'refresh_token': refreshToken(); break;
+        case 'upload_avatar': $user = authenticate(); uploadAvatar($user); break;
+        case 'add_friend': $user = authenticate(); addFriend($user); break;
+        case 'handle_friend_request': $user = authenticate(); handleFriendRequest($user); break;
+        case 'send_message': $user = authenticate(); sendMessage($user); break;
+        case 'get_messages': $user = authenticate(); getMessages($user); break;
+        case 'delete_account': $user = authenticate(); deleteAccount($user); break;
+        case 'get_station_version': getStationVersion(); break;
+        case 'get_server_type': getServerType(); break;
+        case 'get_verify_setting': $user = authenticate(); getVerifySetting($user); break;
+        case 'set_verify_setting': $user = authenticate(); setVerifySetting($user); break;
+        case 'get_friend_requests': $user = authenticate(); getFriendRequests($user); break;
+        case 'accept_friend_request': $user = authenticate(); acceptFriendRequest($user); break;
+        case 'get_avatar': getAvatar(); break;
+        case 'get_friends': $user = authenticate(); getFriends($user); break;
+        case 'get_user_info': getUserInfo(); break;
+        case 'get_station_id': sendResponse(200, 'Station ID retrieved', ['station_id' => $GLOBALS['stationID']]); break;
+        case 'get_friend_avatar_img_md5': $user = authenticate(); getFriendAvatarImgMd5($user); break;
+        // 文件相关
+        case 'upload_file': $user = authenticate(); uploadFile($user); break;
+        case 'multipart_init': $user = authenticate(); multipartInit($user); break;
+        case 'multipart_upload': $user = authenticate(); multipartUpload($user); break;
+        case 'multipart_complete': $user = authenticate(); multipartComplete($user); break;
+        case 'get_file_info': $user = authenticate(); getFileInfo($user); break;
+        case 'set_file_downloadable': $user = authenticate(); setFileDownloadable($user); break;
+        case 'generate_download_url': $user = authenticate(); generateDownloadUrl($user); break;
+        case 'get_file': getFile(); break;
+        case 'get_station_config': getStationConfig(); break;
+
+        case 'get_user_files': $user = authenticate(); getUserFiles($user); break;
+        default: sendResponse(400, 'Invalid action');
+    }
+} catch (Exception $e) {
+    sendResponse(500, 'Server error: ' . $e->getMessage());
 }
 ?>

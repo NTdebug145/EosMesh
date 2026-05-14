@@ -19,12 +19,20 @@
         .message-bubble { max-width: 70%; word-wrap: break-word; border-radius: 18px; padding: 8px 12px; margin: 4px 0; word-break: break-all; white-space: pre-wrap; }
         .message-mine { background-color: #1976d2; color: white; align-self: flex-end; border-bottom-right-radius: 4px; }
         .message-other { background-color: #e0e0e0; color: #000; align-self: flex-start; border-bottom-left-radius: 4px; }
-        .message-time { font-size: 0.7rem; margin-top: 2px; color: #888; }
         .chat-messages { display: flex; flex-direction: column; overflow-y: auto; flex: 1; padding: 16px; position: relative; min-width: 0; max-width: 100%; box-sizing: border-box; }
         body { margin: 0; background-color: #f5f5f5; }
         .search-result { display: flex; align-items: center; padding: 8px; margin-top: 8px; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; }
         .search-result:hover { background-color: #f5f5f5; }
         .loading-more-indicator { text-align: center; padding: 8px; color: #888; font-size: 12px; }
+        .file-card { display: flex; align-items: center; gap: 12px; cursor: pointer; padding: 8px; border-radius: 12px; background-color: rgba(0,0,0,0.05); transition: background 0.2s; }
+        .file-card:hover { background-color: rgba(0,0,0,0.1); }
+        .file-info { flex: 1; min-width: 0; }
+        .file-name { font-weight: 500; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .file-size { font-size: 0.75rem; opacity: 0.7; }
+        .file-download-icon { display: flex; align-items: center; justify-content: center; width: 24px; }
+        .message-mine .file-card { background-color: rgba(255,255,255,0.15); }
+        .message-mine .file-card:hover { background-color: rgba(255,255,255,0.25); }
+        * { transform: translateZ(0); }
     </style>
 </head>
 <body>
@@ -32,27 +40,25 @@
 
 <script type="text/babel">
     const MaterialUI = window.MaterialUI;
-    const {
-        ThemeProvider, createTheme, CssBaseline, Container, Box, Paper, AppBar, Toolbar, Typography, Button,
-        TextField, Avatar, IconButton, List, ListItem, ListItemAvatar, ListItemText, Dialog, DialogTitle,
-        DialogContent, DialogActions, Alert, Snackbar, CircularProgress, Icon, LinearProgress, Drawer,
-        ListItemIcon, Switch, FormControlLabel, Tabs, Tab, RadioGroup, FormControl, FormLabel, Radio,
-        Divider
-    } = MaterialUI;
+const {
+    ThemeProvider, createTheme, CssBaseline, Container, Box, Paper, AppBar, Toolbar, Typography, Button,
+    TextField, Avatar, IconButton, List, ListItem, ListItemAvatar, ListItemText, Dialog, DialogTitle,
+    DialogContent, DialogActions, Alert, Snackbar, CircularProgress, Icon, LinearProgress, Drawer,
+    ListItemIcon, Switch, FormControlLabel, Tabs, Tab, RadioGroup, FormControl, FormLabel, Radio,
+    Divider, useTheme, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Tooltip
+} = MaterialUI;
 
     // ==================== 全局刷新锁 & 事件 ====================
-    let refreshPromise = null;          // 正在进行的刷新Promise
-    let lastRefreshTime = 0;            // 上次刷新成功的时间戳(秒)
-    const REFRESH_INTERVAL = 240;       // 刷新间隔至少4分钟(与后端限制匹配)
-    const TOKEN_EXPIRE_THRESHOLD = 60;  // token剩余有效期小于60秒时提前刷新
+    let refreshPromise = null;
+    let lastRefreshTime = 0;
+    const REFRESH_INTERVAL = 240;
+    const TOKEN_EXPIRE_THRESHOLD = 60;
 
-    // ==================== 工具函数 ====================
     function getApiBase() { return localStorage.getItem('eos_api_base') || ''; }
     function setApiBase(url) { localStorage.setItem('eos_api_base', url); }
     function getDarkModePreference() { const saved = localStorage.getItem('eos_dark_mode'); return saved !== null ? saved === 'true' : false; }
     function setDarkModePreference(isDark) { localStorage.setItem('eos_dark_mode', isDark); }
 
-    // 解析token中的过期时间戳(秒)
     function parseTokenExpiry(token) {
         if (!token) return 0;
         const parts = token.split(':');
@@ -61,7 +67,6 @@
         return isNaN(expires) ? 0 : expires;
     }
 
-    // 检查token是否即将过期(剩余有效期小于阈值)
     function isTokenExpiringSoon(token) {
         const expiry = parseTokenExpiry(token);
         if (expiry === 0) return false;
@@ -69,7 +74,6 @@
         return remaining < TOKEN_EXPIRE_THRESHOLD;
     }
 
-    // 核心API请求(支持自动重试刷新)
     async function apiRequest(action, options = {}) {
         const apiBase = getApiBase();
         if (!apiBase) throw new Error('未设置站点链接，请先设置');
@@ -107,21 +111,15 @@
         try {
             return await makeRequest();
         } catch (err) {
-            // 如果是401(未授权)且允许自动刷新且不是刷新token请求自身
             if (err.status === 401 && !skipAuthRefresh && action !== 'refresh_token') {
-                // 尝试刷新token
                 const refreshed = await attemptTokenRefresh();
                 if (refreshed) {
-                    // 刷新成功，更新请求头中的token并重试
                     const newAuth = getAuth();
                     if (newAuth.token) headers['Authorization'] = newAuth.token;
-                    // 重新发起请求(注意避免再次进入401死循环，重试时禁用再刷新)
                     const retryOptions = { ...options, skipAuthRefresh: true };
                     return await apiRequest(action, retryOptions);
                 } else {
-                    // 刷新失败，需要重新登录
                     clearAuth();
-                    // 触发全局登出事件
                     if (typeof window.__onAuthFailure === 'function') {
                         window.__onAuthFailure();
                     } else {
@@ -134,9 +132,7 @@
         }
     }
 
-    // 刷新Token的核心逻辑(带锁)
     async function attemptTokenRefresh() {
-        // 已经有刷新操作在进行中，直接等待它完成
         if (refreshPromise) {
             try {
                 await refreshPromise;
@@ -151,7 +147,6 @@
             const { token } = getAuth();
             if (!apiBase || !token) return false;
             
-            // 检查刷新频率(前端控制，避免429)
             const now = Math.floor(Date.now() / 1000);
             if (now - lastRefreshTime < REFRESH_INTERVAL) {
                 console.log('刷新频率过高，跳过本次刷新');
@@ -159,7 +154,6 @@
             }
             
             try {
-                // 直接fetch调用refresh_token接口，避免递归依赖apiRequest的401重试
                 let url = apiBase + (apiBase.includes('?') ? '&' : '?') + 'action=refresh_token';
                 const resp = await fetch(url, {
                     method: 'POST',
@@ -173,12 +167,10 @@
                         saveAuth(uid, newToken);
                         lastRefreshTime = now;
                         console.log('Token刷新成功');
-                        // 触发全局事件，通知MainApp重置刷新计时器
                         window.dispatchEvent(new CustomEvent('eos-token-refreshed'));
                         return true;
                     }
                 } else if (data.code === 429) {
-                    // 频率限制，更新本地上次刷新时间避免一直重试
                     lastRefreshTime = now;
                     console.warn('刷新被限频(429)', data.msg);
                     return false;
@@ -208,6 +200,342 @@
         let url = `${base}${base.includes('?') ? '&' : '?'}action=get_avatar&uid=${encodeURIComponent(uid)}`; 
         if (version) url += `&v=${version}`; 
         return url; 
+    }
+
+    // 文件大小格式化
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    // 解析文件消息
+function parseFileMessage(content) {
+    // 兼容两种格式：[/pan{"stationID":"...","code":"..."}] 或 [/pan/{"stationID":"...","code":"..."}]
+    const regex = /^\[\/pan\/?(\{"stationID":"[A-Z0-9]+","code":"[A-Z0-9]+"\})\]$/;
+    const match = content.match(regex);
+    if (match) {
+        try {
+            const obj = JSON.parse(match[1]);
+            return { stationID: obj.stationID, fileId: obj.code };
+        } catch(e) { return null; }
+    }
+    return null;
+}
+
+    // ==================== UploadView 上传组件 ====================
+    function UploadView({ token, onUploadComplete, siteConfig }) {
+        const theme = useTheme();
+        const [file, setFile] = React.useState(null);
+        const [dragActive, setDragActive] = React.useState(false);
+        const [uploadProgress, setUploadProgress] = React.useState(0);
+        const [uploading, setUploading] = React.useState(false);
+        const [useChunk, setUseChunk] = React.useState(false);
+        const [chunkSizeUnit, setChunkSizeUnit] = React.useState('MB');
+        const [chunkSizeValue, setChunkSizeValue] = React.useState(2);
+        const [allowDownload, setAllowDownload] = React.useState(true);
+        const [snackbar, setSnackbar] = React.useState({ open: false, message: '', severity: 'info' });
+        
+        const maxSizeBytes = siteConfig?.upload_limit_bytes || 1073741824;
+        const maxSizeGB = siteConfig?.upload_limit_gb || 1;
+        
+        const fileSizePercent = file ? Math.min(100, (file.size / maxSizeBytes) * 100) : 0;
+        const isOverSize = file && file.size > maxSizeBytes;
+        
+        const showMessage = (msg, severity = 'info') => setSnackbar({ open: true, message: msg, severity });
+        
+        const handleDrag = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.type === 'dragenter' || e.type === 'dragover') setDragActive(true);
+            else if (e.type === 'dragleave') setDragActive(false);
+        };
+        
+        const handleDrop = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setDragActive(false);
+            const droppedFile = e.dataTransfer.files[0];
+            if (droppedFile) setFile(droppedFile);
+        };
+        
+        const handleFileSelect = (e) => {
+            if (e.target.files[0]) setFile(e.target.files[0]);
+        };
+        
+        const clearFile = () => {
+            setFile(null);
+            setUploadProgress(0);
+        };
+        
+        const uploadFileWithProgress = (fileObj) => {
+            return new Promise((resolve, reject) => {
+                const formData = new FormData();
+                formData.append('file', fileObj);
+                const apiBase = getApiBase();
+                const auth = getAuth();
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', `${apiBase}${apiBase.includes('?') ? '&' : '?'}action=upload_file`);
+                xhr.setRequestHeader('Authorization', auth.token);
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        setUploadProgress((e.loaded / e.total) * 100);
+                    }
+                };
+                xhr.onload = () => {
+                    if (xhr.status === 200) {
+                        try {
+                            const resp = JSON.parse(xhr.responseText);
+                            if (resp.code === 200) resolve(resp.data);
+                            else reject(new Error(resp.msg));
+                        } catch (err) { reject(err); }
+                    } else reject(new Error('上传失败'));
+                };
+                xhr.onerror = () => reject(new Error('网络错误'));
+                xhr.send(formData);
+            });
+        };
+        
+        const uploadWithChunks = async (fileObj) => {
+            let chunkSizeBytes = chunkSizeValue * (chunkSizeUnit === 'MB' ? 1024 * 1024 : 1024);
+            const totalChunks = Math.ceil(fileObj.size / chunkSizeBytes);
+            setUploadProgress(0);
+            
+            const initData = await apiRequest('multipart_init', {
+                token, method: 'POST',
+                body: {
+                    original_name: fileObj.name,
+                    total_chunks: totalChunks,
+                    chunk_size: chunkSizeBytes
+                }
+            });
+            const uploadId = initData.data.upload_id;
+            
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * chunkSizeBytes;
+                const end = Math.min(start + chunkSizeBytes, fileObj.size);
+                const chunk = fileObj.slice(start, end);
+                const chunkFormData = new FormData();
+                chunkFormData.append('upload_id', uploadId);
+                chunkFormData.append('part_number', i + 1);
+                chunkFormData.append('chunk', chunk);
+                
+                await new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    const apiBase = getApiBase();
+                    const auth = getAuth();
+                    xhr.open('POST', `${apiBase}${apiBase.includes('?') ? '&' : '?'}action=multipart_upload`);
+                    xhr.setRequestHeader('Authorization', auth.token);
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable) {
+                            const chunkProgress = (e.loaded / e.total) * (100 / totalChunks);
+                            setUploadProgress(prev => Math.min(100, (i / totalChunks) * 100 + chunkProgress));
+                        }
+                    };
+                    xhr.onload = () => {
+                        if (xhr.status === 200) resolve();
+                        else reject(new Error('分块上传失败'));
+                    };
+                    xhr.onerror = () => reject(new Error('网络错误'));
+                    xhr.send(chunkFormData);
+                });
+            }
+            
+            const completeData = await apiRequest('multipart_complete', {
+                token, method: 'POST',
+                body: { upload_id: uploadId }
+            });
+            setUploadProgress(100);
+            return completeData.data;
+        };
+        
+        const handleUpload = async () => {
+            if (!file || isOverSize) return;
+            setUploading(true);
+            setUploadProgress(0);
+            try {
+                let uploadResult;
+                if (useChunk) uploadResult = await uploadWithChunks(file);
+                else uploadResult = await uploadFileWithProgress(file);
+                
+                const fileId = uploadResult.file_id;
+                
+                if (!allowDownload && fileId) {
+                    await apiRequest('set_file_downloadable', {
+                        token, method: 'POST',
+                        body: { file_id: fileId, allow_download: false }
+                    });
+                }
+                
+                showMessage('文件上传成功！', 'success');
+                if (onUploadComplete) onUploadComplete(fileId);
+                clearFile();
+            } catch (err) {
+                showMessage(`上传失败: ${err.message}`, 'error');
+            } finally {
+                setUploading(false);
+                setUploadProgress(0);
+            }
+        };
+        
+        React.useEffect(() => {
+            if (chunkSizeUnit === 'KB' && chunkSizeValue > 1024) setChunkSizeValue(1024);
+            if (chunkSizeUnit === 'MB' && chunkSizeValue > 100) setChunkSizeValue(100);
+        }, [chunkSizeUnit]);
+        
+        const hasFile = !!file && !isOverSize;
+        
+        return (
+            <Box sx={{ flex: 1, display: 'flex', flexDirection: { xs: 'column', md: 'row' }, gap: 3, p: 3, overflow: 'auto', bgcolor: 'background.default' }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Paper
+                        variant="outlined"
+                        onDragEnter={handleDrag}
+                        onDragLeave={handleDrag}
+                        onDragOver={handleDrag}
+                        onDrop={handleDrop}
+                        onClick={() => document.getElementById('file-input').click()}
+                        sx={{
+                            position: 'relative',
+                            height: 300,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            bgcolor: dragActive ? 'action.hover' : 'background.paper',
+                            border: dragActive ? '2px dashed #1976d2' : `2px dashed ${theme.palette.divider}`,
+                            borderRadius: 4,
+                            overflow: 'hidden',
+                            transition: 'all 0.2s',
+                            '&:hover': { bgcolor: 'action.hover' }
+                        }}
+                    >
+                        <input
+                            id="file-input"
+                            type="file"
+                            style={{ display: 'none' }}
+                            onChange={handleFileSelect}
+                            disabled={uploading}
+                        />
+                        {file && !isOverSize && (
+                            <Box sx={{
+                                position: 'absolute',
+                                bottom: 0,
+                                left: 0,
+                                width: `${fileSizePercent}%`,
+                                height: '8px',
+                                bgcolor: '#4caf50',
+                                transition: 'width 0.3s'
+                            }} />
+                        )}
+                        {file && isOverSize && (
+                            <Box sx={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                bgcolor: 'rgba(244, 67, 54, 0.2)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center'
+                            }}>
+                                <Typography color="error">文件大小超过站点限制 ({maxSizeGB}GB)</Typography>
+                            </Box>
+                        )}
+                        {!file && (
+                            <>
+                                <Icon sx={{ fontSize: 64, color: 'grey.400', mb: 2 }}>cloud_upload</Icon>
+                                <Typography variant="body1" color="text.secondary">拖拽文件到此处，或点击选择</Typography>
+                                <Typography variant="caption" color="text.secondary">支持任意格式，最大 {maxSizeGB}GB</Typography>
+                            </>
+                        )}
+                        {file && !isOverSize && (
+                            <Box sx={{ textAlign: 'center', p: 2, zIndex: 1 }}>
+                                <Typography variant="body1" fontWeight={500}>{file.name}</Typography>
+                                <Typography variant="caption" color="text.secondary">
+                                    {(file.size / 1024 / 1024).toFixed(2)} MB / {maxSizeGB} GB
+                                </Typography>
+                            </Box>
+                        )}
+                    </Paper>
+                </Box>
+                
+                <Box sx={{ width: { xs: '100%', md: 320 } }}>
+                    <Paper variant="outlined" sx={{ p: 2 }}>
+                        <Typography variant="subtitle1" fontWeight={500} gutterBottom>上传选项</Typography>
+                        
+                        <FormControlLabel
+                            control={<Switch checked={useChunk} onChange={(e) => setUseChunk(e.target.checked)} disabled={uploading} />}
+                            label="启用分块上传"
+                            sx={{ mb: 1 }}
+                        />
+                        
+                        {useChunk && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                                <TextField
+                                    type="number"
+                                    size="small"
+                                    value={chunkSizeValue}
+                                    onChange={(e) => setChunkSizeValue(Math.max(1, parseInt(e.target.value) || 1))}
+                                    disabled={uploading}
+                                    sx={{ width: 100 }}
+                                />
+                                <RadioGroup row value={chunkSizeUnit} onChange={(e) => setChunkSizeUnit(e.target.value)}>
+                                    <FormControlLabel value="KB" control={<Radio size="small" />} label="KB" />
+                                    <FormControlLabel value="MB" control={<Radio size="small" />} label="MB" />
+                                </RadioGroup>
+                            </Box>
+                        )}
+                        
+                        <FormControlLabel
+                            control={<Switch checked={allowDownload} onChange={(e) => setAllowDownload(e.target.checked)} disabled={uploading} />}
+                            label="是否允许其他人下载"
+                            sx={{ mb: 2 }}
+                        />
+                        
+                        <Divider sx={{ my: 2 }} />
+                        
+                        <Box sx={{ display: 'flex', gap: 2 }}>
+                            <Box sx={{ flex: 1, position: 'relative' }}>
+                                {uploading ? (
+                                    <LinearProgress
+                                        variant="determinate"
+                                        value={uploadProgress}
+                                        sx={{ height: 36, borderRadius: 1 }}
+                                    />
+                                ) : (
+                                    <Button
+                                        fullWidth
+                                        variant="contained"
+                                        onClick={handleUpload}
+                                        disabled={!hasFile || uploading}
+                                        startIcon={<Icon>upload</Icon>}
+                                    >
+                                        上传
+                                    </Button>
+                                )}
+                            </Box>
+                            <Button
+                                variant="outlined"
+                                onClick={clearFile}
+                                disabled={!file || uploading}
+                                startIcon={<Icon>clear</Icon>}
+                            >
+                                清空
+                            </Button>
+                        </Box>
+                    </Paper>
+                </Box>
+                
+                <Snackbar open={snackbar.open} autoHideDuration={4000} onClose={() => setSnackbar({ ...snackbar, open: false })}>
+                    <Alert severity={snackbar.severity}>{snackbar.message}</Alert>
+                </Snackbar>
+            </Box>
+        );
     }
 
     // ==================== AboutPage ====================
@@ -263,7 +591,6 @@
                 const action = isLogin ? 'login' : 'register';
                 const data = await apiRequest(action, { body: { username: username.trim(), password }, skipAuthRefresh: true });
                 saveAuth(data.data.uid, data.data.token);
-                // 重置刷新计时器状态
                 lastRefreshTime = 0;
                 refreshPromise = null;
                 onLogin();
@@ -369,7 +696,308 @@
         );
     }
 
-    // ==================== MainApp (分页+增量轮询+新Token刷新策略) ====================
+    // ==================== FileMessageCard 组件 ====================
+    function FileMessageCard({ fileId, isMine, onSnackbar }) {
+        const [meta, setMeta] = React.useState(null);
+        const [loading, setLoading] = React.useState(false);
+        const [error, setError] = React.useState(false);
+        const [downloading, setDownloading] = React.useState(false);
+        const token = getAuth().token;
+
+
+        React.useEffect(() => {
+            if (!fileId) return;
+            setLoading(true);
+            apiRequest('get_file_info', { token, method: 'POST', body: { file_id: fileId } })
+                .then(res => {
+                    setMeta(res.data);
+                    setLoading(false);
+                })
+                .catch(err => {
+                    console.error('获取文件信息失败', err);
+                    setError(true);
+                    setLoading(false);
+                });
+        }, [fileId, token]);
+
+        const handleDownload = async () => {
+            if (!meta || !meta.allow_download) {
+                if (onSnackbar) onSnackbar('文件不允许下载', 'warning');
+                return;
+            }
+            setDownloading(true);
+            try {
+                const res = await apiRequest('generate_download_url', { token, method: 'POST', body: { file_id: fileId } });
+                const url = res.data.url;
+                window.open(url, '_blank');
+            } catch (err) {
+                if (onSnackbar) onSnackbar('获取下载链接失败: ' + err.message, 'error');
+            } finally {
+                setDownloading(false);
+            }
+        };
+
+        if (loading) {
+            return (
+                <div className="file-card" style={{ cursor: 'default' }}>
+                    <Icon>insert_drive_file</Icon>
+                    <div className="file-info">
+                        <div className="file-name">加载中...</div>
+                    </div>
+                    <CircularProgress size={20} />
+                </div>
+            );
+        }
+        if (error || !meta) {
+            return (
+                <div className="file-card" style={{ cursor: 'default' }}>
+                    <Icon>error</Icon>
+                    <div className="file-info">
+                        <div className="file-name">文件信息获取失败</div>
+                    </div>
+                </div>
+            );
+        }
+
+        const fileName = meta.original_name || '未知文件';
+        const fileSize = formatFileSize(meta.size || 0);
+        const allowDownload = meta.allow_download === true;
+
+const displayName = fileName.length > 18 ? fileName.slice(0, 18) + '...' : fileName;
+
+return (
+    <div className="file-card" onClick={allowDownload ? handleDownload : undefined} style={{ cursor: allowDownload ? 'pointer' : 'default' }}>
+        <Icon>insert_drive_file</Icon>
+        <div className="file-info">
+            <div className="file-name" title={fileName}>{displayName}</div>
+            <div className="file-size">{fileSize}</div>
+        </div>
+        <div className="file-download-icon">
+            {allowDownload ? <Icon style={{ color: '#4caf50' }}>check_circle</Icon> : <Icon style={{ color: '#f44336' }}>cancel</Icon>}
+        </div>
+    </div>
+);}
+
+// 下载页面
+function DownloadPanel({ token, onSnackbar }) {
+    const [fileId, setFileId] = React.useState('');
+    const [loading, setLoading] = React.useState(false);
+    const [fileInfo, setFileInfo] = React.useState(null);
+    const [downloadCount, setDownloadCount] = React.useState(0);
+
+    const handleGetInfo = async () => {
+        if (!fileId.trim()) {
+            onSnackbar('请输入文件ID', 'warning');
+            return;
+        }
+        setLoading(true);
+        try {
+            const res = await apiRequest('get_file_info', { token, method: 'POST', body: { file_id: fileId } });
+            setFileInfo(res.data);
+            setDownloadCount(res.data.download_count || 0);
+            onSnackbar('文件信息获取成功', 'success');
+        } catch (err) {
+            onSnackbar('获取失败: ' + err.message, 'error');
+            setFileInfo(null);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleDownload = async () => {
+        if (!fileInfo || !fileInfo.allow_download) {
+            onSnackbar('文件不允许下载', 'warning');
+            return;
+        }
+        setLoading(true);
+        try {
+            const res = await apiRequest('generate_download_url', { token, method: 'POST', body: { file_id: fileId } });
+            window.open(res.data.url, '_blank');
+            setDownloadCount(prev => prev + 1);
+            onSnackbar('下载链接已打开', 'success');
+        } catch (err) {
+            onSnackbar('获取下载链接失败: ' + err.message, 'error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <Box sx={{ p: 3, maxWidth: 600, mx: 'auto' }}>
+            <Typography variant="h6" gutterBottom>通过文件ID下载</Typography>
+            <TextField
+                fullWidth
+                label="文件ID"
+                variant="outlined"
+                value={fileId}
+                onChange={(e) => setFileId(e.target.value.toUpperCase())}
+                placeholder="例如: 3L0BT6QHKFGQ2RE0"
+                sx={{ mb: 2 }}
+            />
+            <Button variant="contained" onClick={handleGetInfo} disabled={loading} sx={{ mr: 2 }}>
+                查询信息
+            </Button>
+            {fileInfo && (
+                <Paper variant="outlined" sx={{ mt: 3, p: 2 }}>
+                    <Typography variant="body1"><strong>文件名：</strong>{fileInfo.original_name}</Typography>
+                    <Typography variant="body1"><strong>大小：</strong>{formatFileSize(fileInfo.size)}</Typography>
+                    <Typography variant="body1"><strong>允许下载：</strong>{fileInfo.allow_download ? '是' : '否'}</Typography>
+                    <Typography variant="body1"><strong>下载次数：</strong>{downloadCount}</Typography>
+                    <Button
+                        variant="contained"
+                        color="primary"
+                        onClick={handleDownload}
+                        disabled={!fileInfo.allow_download || loading}
+                        sx={{ mt: 2 }}
+                    >
+                        获取下载链接
+                    </Button>
+                </Paper>
+            )}
+        </Box>
+    );
+}
+
+// 管理页面（列表式）
+function ManagePanel({ token, stationId, onSnackbar }) {
+    const [files, setFiles] = React.useState([]);
+    const [loading, setLoading] = React.useState(false);
+    const [togglingId, setTogglingId] = React.useState(null);
+    const [downloadingId, setDownloadingId] = React.useState(null);
+
+    const fetchFileList = React.useCallback(async () => {
+        setLoading(true);
+        try {
+            const res = await apiRequest('get_user_files', { token, method: 'GET' });
+            const fileIds = res.data.files || [];
+            const fileDetails = await Promise.all(
+                fileIds.map(async (id) => {
+                    try {
+                        const info = await apiRequest('get_file_info', { token, method: 'POST', body: { file_id: id } });
+                        return { id, ...info.data };
+                    } catch {
+                        return { id, error: true };
+                    }
+                })
+            );
+            setFiles(fileDetails.filter(f => !f.error));
+        } catch (err) {
+            onSnackbar('加载文件列表失败: ' + err.message, 'error');
+        } finally {
+            setLoading(false);
+        }
+    }, [token, onSnackbar]);
+
+    React.useEffect(() => {
+        fetchFileList();
+        const interval = setInterval(fetchFileList, 30000);
+        return () => clearInterval(interval);
+    }, [fetchFileList]);
+
+    const toggleAllowDownload = async (fileId, currentStatus) => {
+        setTogglingId(fileId);
+        try {
+            await apiRequest('set_file_downloadable', { token, method: 'POST', body: { file_id: fileId, allow_download: !currentStatus } });
+            setFiles(prev => prev.map(f => f.id === fileId ? { ...f, allow_download: !currentStatus } : f));
+            onSnackbar(`已${!currentStatus ? '允许' : '禁止'}下载`, 'success');
+        } catch (err) {
+            onSnackbar('操作失败: ' + err.message, 'error');
+        } finally {
+            setTogglingId(null);
+        }
+    };
+
+    const copyFileId = (id) => {
+        navigator.clipboard.writeText(id);
+        onSnackbar('文件ID已复制', 'success');
+    };
+
+    const copyFileMessage = (fileId) => {
+        const msg = `[/pan{"stationID":"${stationId}","code":"${fileId}"}]`;
+        navigator.clipboard.writeText(msg);
+        onSnackbar('文件消息格式已复制，可直接发送', 'success');
+    };
+
+    const handleDownload = async (fileId) => {
+        setDownloadingId(fileId);
+        try {
+            const res = await apiRequest('generate_download_url', { token, method: 'POST', body: { file_id: fileId } });
+            window.open(res.data.url, '_blank');
+            // 下载成功后刷新列表以更新下载次数
+            await fetchFileList();
+            onSnackbar('下载链接已打开', 'success');
+        } catch (err) {
+            onSnackbar('获取下载链接失败: ' + err.message, 'error');
+        } finally {
+            setDownloadingId(null);
+        }
+    };
+
+    if (loading && files.length === 0) {
+        return <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}><CircularProgress /></Box>;
+    }
+
+    return (
+        <Box sx={{ p: 2 }}>
+            <Typography variant="h6" gutterBottom>我的文件</Typography>
+            {files.length === 0 ? (
+                <Typography color="text.secondary">暂无上传的文件</Typography>
+            ) : (
+                <TableContainer component={Paper}>
+                    <Table size="small">
+                        <TableHead>
+                            <TableRow>
+                                <TableCell>文件名</TableCell>
+                                <TableCell>大小</TableCell>
+                                <TableCell>下载次数</TableCell>
+                                <TableCell>允许下载</TableCell>
+                                <TableCell>操作</TableCell>
+                                <TableCell>下载</TableCell>
+                            </TableRow>
+                        </TableHead>
+                        <TableBody>
+                            {files.map(file => (
+                                <TableRow key={file.id}>
+                                    <TableCell sx={{ maxWidth: 200 }}>
+                                        <Tooltip title={file.original_name}>
+                                            <Typography noWrap>{file.original_name.length > 18 ? file.original_name.slice(0,18)+'...' : file.original_name}</Typography>
+                                        </Tooltip>
+                                    </TableCell>
+                                    <TableCell>{formatFileSize(file.size)}</TableCell>
+                                    <TableCell>{file.download_count || 0}</TableCell>
+                                    <TableCell>
+                                        <Switch
+                                            checked={file.allow_download === true}
+                                            onChange={() => toggleAllowDownload(file.id, file.allow_download)}
+                                            disabled={togglingId === file.id}
+                                        />
+                                    </TableCell>
+                                    <TableCell>
+                                        <Button size="small" onClick={() => copyFileId(file.id)} startIcon={<Icon>content_copy</Icon>}>ID</Button>
+                                        <Button size="small" onClick={() => copyFileMessage(file.id)} startIcon={<Icon>chat</Icon>}>复制到聊天</Button>
+                                    </TableCell>
+                                    <TableCell>
+                                        <Button
+                                            size="small"
+                                            variant="outlined"
+                                            onClick={() => handleDownload(file.id)}
+                                            disabled={downloadingId === file.id}
+                                            startIcon={<Icon>download</Icon>}
+                                        >
+                                            下载
+                                        </Button>
+                                    </TableCell>
+                                </TableRow>
+                            ))}
+                        </TableBody>
+                    </Table>
+                </TableContainer>
+            )}
+        </Box>
+    );
+}
+
+    // ==================== MainApp ====================
     function MainApp({ onLogout, darkMode, setDarkMode }) {
         const { uid, token } = getAuth();
         const [friends, setFriends] = React.useState([]);
@@ -401,7 +1029,6 @@
         const [showFriendList, setShowFriendList] = React.useState(false);
         const [fullUserInfo, setFullUserInfo] = React.useState(null);
         
-        // 分页与增量相关状态
         const [hasMore, setHasMore] = React.useState(false);
         const [currentPage, setCurrentPage] = React.useState(1);
         const [totalPages, setTotalPages] = React.useState(0);
@@ -414,14 +1041,35 @@
         const [shouldAutoScroll, setShouldAutoScroll] = React.useState(true);
         const myAvatarUrl = React.useMemo(()=>getAvatarUrl(uid, avatarVersion), [uid, avatarVersion]);
 
-        // ---------- 新 Token 刷新调度逻辑 ----------
         const refreshTimerRef = React.useRef(null);
         const retryCountRef = React.useRef(0);
         const MAX_RETRIES = 5;
-        const REFRESH_DELAY_MS = 250000; // 4分10秒 = 250000ms
-        const RETRY_INTERVAL_MS = 5000;   // 5秒
+        const REFRESH_DELAY_MS = 250000;
+        const RETRY_INTERVAL_MS = 5000;
 
-        // 停止当前任何正在等待的刷新定时器
+        const [showUploadManager, setShowUploadManager] = React.useState(false);
+        const [uploadManagerTab, setUploadManagerTab] = React.useState(0);
+        const [siteConfig, setSiteConfig] = React.useState({ upload_limit_gb: 1, upload_limit_bytes: 1073741824 });
+
+const [stationId, setStationId] = React.useState('');
+React.useEffect(() => {
+    if (uid && token) {
+        apiRequest('get_station_id', { method: 'GET', skipAuthRefresh: true })
+            .then(res => setStationId(res.data.station_id))
+            .catch(console.warn);
+    }
+}, [uid, token]);
+
+        const updateMessages = React.useCallback((newMessagesOrUpdater) => {
+            setMessages(prev => {
+                const next = typeof newMessagesOrUpdater === 'function'
+                    ? newMessagesOrUpdater(prev)
+                    : newMessagesOrUpdater;
+                messagesRef.current = next;
+                return next;
+            });
+        }, []);
+
         const stopRefreshTimer = () => {
             if (refreshTimerRef.current) {
                 clearTimeout(refreshTimerRef.current);
@@ -429,42 +1077,32 @@
             }
         };
 
-        // 执行一次刷新尝试（带重试计数）
         const executeRefreshWithRetry = async () => {
             console.log(`执行Token刷新尝试，当前重试次数: ${retryCountRef.current}`);
             const success = await attemptTokenRefresh();
             if (success) {
-                // 刷新成功，重置重试计数，并安排下一次正常刷新（REFRESH_DELAY_MS后）
                 retryCountRef.current = 0;
                 console.log("刷新成功，重置重试计数器，安排下一次刷新");
                 scheduleNextRefresh(REFRESH_DELAY_MS);
             } else {
-                // 刷新失败，增加重试计数
                 retryCountRef.current += 1;
                 console.log(`刷新失败，当前重试次数 ${retryCountRef.current}/${MAX_RETRIES}`);
                 if (retryCountRef.current <= MAX_RETRIES) {
-                    // 还有重试机会，5秒后再次尝试
                     scheduleNextRefresh(RETRY_INTERVAL_MS);
                 } else {
-                    // 超过最大重试次数，强制退出登录
                     console.warn("Token刷新连续失败超过5次，强制退出登录");
-                    // 清理定时器
                     stopRefreshTimer();
-                    // 清除本地登录状态
                     clearAuth();
-                    // 触发全局登出
                     if (typeof window.__onAuthFailure === 'function') {
                         window.__onAuthFailure();
                     } else {
                         onLogout();
                     }
-                    // 可选：提示用户
                     setSnackbar({ open: true, message: '登录已过期，请重新登录', severity: 'error' });
                 }
             }
         };
 
-        // 安排下一次刷新（延迟delayMs后执行executeRefreshWithRetry）
         const scheduleNextRefresh = (delayMs) => {
             stopRefreshTimer();
             refreshTimerRef.current = setTimeout(() => {
@@ -473,16 +1111,13 @@
             }, delayMs);
         };
 
-        // 重置整个刷新周期（在登录成功或外部刷新成功时调用）
         const resetRefreshCycle = () => {
             console.log("重置刷新周期，清除现有定时器，重新开始计时");
             stopRefreshTimer();
             retryCountRef.current = 0;
-            // 开始第一次等待（4分10秒后执行首次刷新）
             scheduleNextRefresh(REFRESH_DELAY_MS);
         };
 
-        // 监听全局token刷新成功事件（由attemptTokenRefresh触发）
         React.useEffect(() => {
             const handleTokenRefreshed = () => {
                 console.log("收到token刷新成功事件，重置刷新计时器");
@@ -494,25 +1129,21 @@
             };
         }, []);
 
-        // 登录成功后启动刷新调度
         React.useEffect(() => {
-            // 在组件挂载且已有有效token时启动调度
             if (uid && token) {
                 resetRefreshCycle();
             }
             return () => {
                 stopRefreshTimer();
             };
-        }, [uid, token]); // 当uid/token变化时（例如登录成功）重新启动调度
+        }, [uid, token]);
 
-        // 登出时清理定时器
         const handleLogout = () => {
             stopRefreshTimer();
             clearAuth();
             onLogout();
         };
 
-        // 注册全局登出回调（兼容401触发的登出）
         React.useEffect(() => {
             window.__onAuthFailure = () => {
                 stopRefreshTimer();
@@ -522,7 +1153,6 @@
             return () => { delete window.__onAuthFailure; };
         }, [onLogout]);
 
-        // ---------- 原有其他逻辑 ----------
         const handleScroll = React.useCallback(() => {
             if (!chatContainerRef.current) return;
             const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
@@ -546,9 +1176,9 @@
             const prevScrollTop = chatContainerRef.current?.scrollTop || 0;
             const nextPage = currentPage - 1;
             try {
-                const data = await apiRequest('get_messages', { 
-                    token, method:'GET', 
-                    query: { friend_uid: selectedFriend.uid, page: nextPage, limit: 20 } 
+                const data = await apiRequest('get_messages', {
+                    token, method: 'GET',
+                    query: { friend_uid: selectedFriend.uid, page: nextPage, limit: 20 }
                 });
                 const olderMessages = data.data.messages || [];
                 if (olderMessages.length > 0) {
@@ -565,87 +1195,137 @@
                     setHasMore(false);
                 }
             } catch(err) {
-                setSnackbar({ open:true, message:`加载历史消息失败: ${err.message}`, severity:'error' });
+                setSnackbar({ open: true, message: `加载历史消息失败: ${err.message}`, severity: 'error' });
             } finally {
                 setLoadingMore(false);
             }
         };
 
-        const pollNewMessages = React.useCallback(async () => {
-            if (!selectedFriend || latestMsgTime === 0) return;
-            try {
-                const data = await apiRequest('get_messages', { 
-                    token, method:'GET', 
-                    query: { friend_uid: selectedFriend.uid, since: latestMsgTime } 
-                });
-                const newMsgs = data.data;
-                if (newMsgs && newMsgs.length > 0) {
-                    setMessages(prev => {
-                        const merged = [...prev, ...newMsgs];
-                        const unique = [];
-                        const map = new Map();
-                        for (const msg of merged) {
-                            const key = `${msg.from}_${msg.time}`;
-                            if (!map.has(key)) map.set(key, msg);
-                        }
-                        const result = Array.from(map.values());
-                        result.sort((a,b) => a.time - b.time);
-                        return result;
-                    });
-                    const newestTime = newMsgs[newMsgs.length - 1].time;
-                    if (newestTime > latestMsgTime) setLatestMsgTime(newestTime);
-                    scrollToBottom();
+const pollNewMessages = React.useCallback(async () => {
+    if (!selectedFriend || latestMsgTime === 0) return;
+    try {
+        const data = await apiRequest('get_messages', {
+            token, method: 'GET',
+            query: { friend_uid: selectedFriend.uid, since: latestMsgTime }
+        });
+        const newMsgs = data.data;
+        if (newMsgs && newMsgs.length > 0) {
+            setMessages(prev => {
+                // 构建已存在消息的唯一标识（from + time + content）
+                const existingKeys = new Set();
+                for (const msg of prev) {
+                    const key = `${msg.from}|${msg.time}|${msg.content}`;
+                    existingKeys.add(key);
                 }
-            } catch(err) {
-                console.error("轮询新消息失败", err);
-            }
-        }, [selectedFriend, latestMsgTime, token, scrollToBottom]);
+                // 过滤新消息中真正未出现过的
+                const uniqueNew = [];
+                let newestTime = latestMsgTime;
+                for (const msg of newMsgs) {
+                    const key = `${msg.from}|${msg.time}|${msg.content}`;
+                    if (!existingKeys.has(key)) {
+                        uniqueNew.push(msg);
+                        if (msg.time > newestTime) newestTime = msg.time;
+                    }
+                }
+                if (uniqueNew.length === 0) return prev;
+                const merged = [...prev, ...uniqueNew];
+                merged.sort((a, b) => a.time - b.time);
+                if (newestTime > latestMsgTime) setLatestMsgTime(newestTime);
+                return merged;
+            });
+            scrollToBottom();
+        }
+    } catch (err) {
+        console.error("轮询新消息失败", err);
+    }
+}, [selectedFriend, latestMsgTime, token, scrollToBottom]);
 
-        const initMessages = async (friendUid) => {
-            if (!friendUid) return;
-            setLoadingMessages(true);
+const initMessages = async (friendUid) => {
+    if (!friendUid) return;
+    setLoadingMessages(true);
+    setMessages([]);
+    setHasMore(false);
+    setCurrentPage(1);
+    setTotalPages(0);
+    const now = Math.floor(Date.now() / 1000);
+    setLatestMsgTime(now);
+    messagesRef.current = [];
+
+    try {
+        // 先获取第一页以得到总页数
+        const firstPageData = await apiRequest('get_messages', {
+            token, method: 'GET',
+            query: { friend_uid: friendUid, page: 1, limit: 20 }
+        });
+        const totalPagesFromServer = firstPageData.data.total_pages || 0;
+        setTotalPages(totalPagesFromServer);
+
+        if (totalPagesFromServer === 0) {
             setMessages([]);
             setHasMore(false);
-            setCurrentPage(1);
-            setTotalPages(0);
-            setLatestMsgTime(0);
-            try {
-                const lastPageData = await apiRequest('get_messages', {
-                    token, method:'GET',
-                    query: { friend_uid: friendUid, page: 1, limit: 20 }
-                });
-                const totalPagesFromServer = lastPageData.data.total_pages || 0;
-                setTotalPages(totalPagesFromServer);
-                if (totalPagesFromServer === 0) {
-                    setMessages([]);
-                    setHasMore(false);
-                    setCurrentPage(0);
-                    return;
-                }
-                const lastPage = totalPagesFromServer;
-                const pageData = lastPage === 1 ? lastPageData : await apiRequest('get_messages', {
-                    token, method:'GET',
-                    query: { friend_uid: friendUid, page: lastPage, limit: 20 }
-                });
-                const loadedMsgs = pageData.data.messages || [];
-                setMessages(loadedMsgs);
-                setCurrentPage(lastPage);
-                setHasMore(lastPage > 1);
-                if (loadedMsgs.length > 0) {
-                    setLatestMsgTime(loadedMsgs[loadedMsgs.length - 1].time);
-                }
-                setTimeout(() => {
-                    if (chatContainerRef.current) {
-                        chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-                    }
-                    setShouldAutoScroll(true);
-                }, 100);
-            } catch(err) {
-                setSnackbar({ open:true, message:`加载消息失败: ${err.message}`, severity:'error' });
-            } finally {
-                setLoadingMessages(false);
+            setCurrentPage(0);
+            return;
+        }
+
+        let loadedMsgs = [];
+        let newCurrentPage = totalPagesFromServer;
+        let newHasMore = false;
+
+        if (totalPagesFromServer === 1) {
+            // 只有一页，直接使用
+            loadedMsgs = firstPageData.data.messages || [];
+            newCurrentPage = 1;
+            newHasMore = false;
+        } else {
+            // 总页数 >= 2，加载最后两页（最新的 40 条）
+            const lastPage = totalPagesFromServer;
+            const secondLastPage = lastPage - 1;
+
+            // 请求最后一页
+            const lastPageData = await apiRequest('get_messages', {
+                token, method: 'GET',
+                query: { friend_uid: friendUid, page: lastPage, limit: 20 }
+            });
+            const lastPageMsgs = lastPageData.data.messages || [];
+
+            // 请求倒数第二页
+            const secondLastPageData = await apiRequest('get_messages', {
+                token, method: 'GET',
+                query: { friend_uid: friendUid, page: secondLastPage, limit: 20 }
+            });
+            const secondLastPageMsgs = secondLastPageData.data.messages || [];
+
+            // 合并两页消息并按时间排序（旧→新，显示时最新的在底部）
+            loadedMsgs = [...secondLastPageMsgs, ...lastPageMsgs];
+            loadedMsgs.sort((a, b) => a.time - b.time);
+
+            // 当前已加载到倒数第二页
+            newCurrentPage = secondLastPage;
+            // 如果还有更早的页（总页数 > 2），则还有更多消息
+            newHasMore = (totalPagesFromServer > 2);
+        }
+
+        setMessages(loadedMsgs);
+        setCurrentPage(newCurrentPage);
+        setHasMore(newHasMore);
+
+        if (loadedMsgs.length > 0) {
+            // 最新消息时间是最后一条消息的时间
+            setLatestMsgTime(loadedMsgs[loadedMsgs.length - 1].time);
+        }
+
+        setTimeout(() => {
+            if (chatContainerRef.current) {
+                chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
             }
-        };
+            setShouldAutoScroll(true);
+        }, 100);
+    } catch (err) {
+        setSnackbar({ open: true, message: `加载消息失败: ${err.message}`, severity: 'error' });
+    } finally {
+        setLoadingMessages(false);
+    }
+};
 
         const sendMessage = async () => {
             if (!selectedFriend || !inputMsg.trim()) return;
@@ -727,7 +1407,13 @@
         
         React.useEffect(() => { fetchUserInfo(); fetchFriends(); }, [fetchUserInfo, fetchFriends]);
         React.useEffect(() => { if (selectedFriend) initMessages(selectedFriend.uid); }, [selectedFriend]);
-        
+        React.useEffect(() => {
+            if (uid && token) {
+                apiRequest('get_station_config', { token, method: 'GET', skipAuthRefresh: true })
+                    .then(res => setSiteConfig(res.data))
+                    .catch(err => console.warn('获取站点配置失败', err));
+            }
+        }, [uid, token]);
         React.useEffect(() => {
             if (!selectedFriend) return;
             const interval = setInterval(() => { pollNewMessages(); }, 5000);
@@ -757,6 +1443,8 @@
 
         React.useEffect(() => { if (showUserProfile) fetchFullUserInfo(); }, [showUserProfile, fetchFullUserInfo]);
 
+        const showSnackbar = (msg, severity) => setSnackbar({ open: true, message: msg, severity });
+
         return (
             <Box sx={{ display:'flex', height:'100vh', flexDirection:'column' }}>
                 <AppBar position="static">
@@ -769,14 +1457,15 @@
                                 setShowUserProfile(true);
                             }
                             else if (showUserProfile) setShowUserProfile(false);
+                            else if (showUploadManager) setShowUploadManager(false);
                             else setDrawerOpen(true);
                         }} edge="start">
-                            <Icon>{(showAbout || showMessagesPage || showUserProfile || showFriendList) ? 'arrow_back' : 'menu'}</Icon>
+                            <Icon>{(showAbout || showMessagesPage || showUserProfile || showFriendList || showUploadManager) ? 'arrow_back' : 'menu'}</Icon>
                         </IconButton>
                         <Typography variant="h6" sx={{ flexGrow:1, ml:2 }}>
-                            {showAbout ? '关于' : showMessagesPage ? '消息' : showUserProfile ? '用户' : showFriendList ? '好友列表' : 'EosMesh'}
+                            {showUploadManager ? '上传管理' : showAbout ? '关于' : showMessagesPage ? '消息' : showUserProfile ? '用户' : showFriendList ? '好友列表' : 'EosMesh'}
                         </Typography>
-                        {!showAbout && !showUserProfile && !showFriendList && <Box><IconButton color="inherit" onClick={()=>setAddFriendOpen(true)}><Icon>add</Icon></IconButton><IconButton color="inherit" onClick={()=>{ setTempApiBase(getApiBase()); setSettingsOpen(true); }}><Icon>settings</Icon></IconButton></Box>}
+                        {!showAbout && !showUserProfile && !showFriendList && !showMessagesPage && !showUploadManager && <Box><IconButton color="inherit" onClick={()=>setAddFriendOpen(true)}><Icon>add</Icon></IconButton><IconButton color="inherit" onClick={()=>{ setTempApiBase(getApiBase()); setSettingsOpen(true); }}><Icon>settings</Icon></IconButton></Box>}
                     </Toolbar>
                 </AppBar>
                 <Drawer anchor="left" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
@@ -800,13 +1489,17 @@
                                 <ListItemIcon><Icon>account_circle</Icon></ListItemIcon>
                                 <ListItemText primary="用户" />
                             </ListItem>
-                            <ListItem button onClick={() => { setShowAbout(true); setDrawerOpen(false); }}>
-                                <ListItemIcon><Icon>info</Icon></ListItemIcon>
-                                <ListItemText primary="关于" />
-                            </ListItem>
                             <ListItem button onClick={() => { setShowMessagesPage(true); setShowAbout(false); setDrawerOpen(false); }}>
                                 <ListItemIcon><Icon>message</Icon></ListItemIcon>
                                 <ListItemText primary="消息" />
+                            </ListItem>
+                            <ListItem button onClick={() => { setShowUploadManager(true); setShowUserProfile(false); setShowAbout(false); setShowMessagesPage(false); setShowFriendList(false); setDrawerOpen(false); }}>
+                                <ListItemIcon><Icon>cloud_upload</Icon></ListItemIcon>
+                                <ListItemText primary="上传管理" />
+                            </ListItem>
+                            <ListItem button onClick={() => { setShowAbout(true); setDrawerOpen(false); }}>
+                                <ListItemIcon><Icon>info</Icon></ListItemIcon>
+                                <ListItemText primary="关于" />
                             </ListItem>
                         </List>
                         <Box sx={{ px: 2, pb: 2, mt: 'auto' }}>
@@ -816,7 +1509,30 @@
                 </Drawer>
 
                 <Box sx={{ display:'flex', flex:1, overflow:'hidden' }}>
-                    {showAbout ? (
+                    {showUploadManager ? (
+                        <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                            <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper', px: 2 }}>
+                                <Tabs value={uploadManagerTab} onChange={(e, v) => setUploadManagerTab(v)}>
+                                    <Tab label="上传" />
+                                    <Tab label="下载" />
+                                    <Tab label="管理" />
+                                </Tabs>
+                            </Box>
+                            <Box sx={{ flex: 1, overflow: 'auto' }}>
+                                {uploadManagerTab === 0 && (
+                                    <UploadView token={token} siteConfig={siteConfig} onUploadComplete={(fileId) => {
+                                        setSnackbar({ open: true, message: `上传成功，文件ID: ${fileId}`, severity: 'success' });
+                                    }} />
+                                )}
+{uploadManagerTab === 1 && (
+    <DownloadPanel token={token} onSnackbar={showSnackbar} />
+)}
+{uploadManagerTab === 2 && (
+    <ManagePanel token={token} stationId={stationId} onSnackbar={showSnackbar} />
+)}
+                            </Box>
+                        </Box>
+                    ) : showAbout ? (
                         <AboutPage />
                     ) : showMessagesPage ? (
                         <MessagesPage fetchFriends={fetchFriends} tabValue={messagesPageTab} setTabValue={setMessagesPageTab} />
@@ -874,7 +1590,7 @@
                             </List>
                         </Box>
                     ) : (
-                        // 主聊天界面（带分页和增量轮询）
+                        // 主聊天界面
                         <>
                             <Paper elevation={0} sx={{ width:280, borderRight:'1px solid', borderColor:'divider', overflowY:'auto', bgcolor:'background.paper' }}>
                                 <List>
@@ -898,14 +1614,48 @@
                                         {loadingMessages && <LinearProgress sx={{ position:'absolute', top:0, left:0, right:0, zIndex:1 }} />}
                                         <Box className="chat-messages" ref={chatContainerRef} onScroll={handleScroll}>
                                             {loadingMore && <div className="loading-more-indicator">加载更早消息...</div>}
-                                            {messages.length===0 ? <Typography variant="body2" sx={{ textAlign:'center', color:'text.secondary', mt:4 }}>暂无消息，发送一条吧~</Typography> : messages.map((msg,idx)=>(
-                                                <Box key={`${msg.from}_${msg.time}_${idx}`} sx={{ display:'flex', justifyContent:msg.from===uid?'flex-end':'flex-start', mb:1 }}>
-                                                    <div className={`message-bubble ${msg.from===uid?'message-mine':'message-other'}`}>
-                                                        <Typography variant="body2">{msg.content}</Typography>
-                                                        <Typography variant="caption" className="message-time" sx={{ display:'block', textAlign:'right', color:msg.from===uid?'#ddd':'#666' }}>{formatTime(msg.time)}</Typography>
-                                                    </div>
-                                                </Box>
-                                            ))}
+                                            {messages.length===0 ? <Typography variant="body2" sx={{ textAlign:'center', color:'text.secondary', mt:4 }}>暂无消息，发送一条吧~</Typography> : messages.map((msg, idx) => {
+                                                const isMine = msg.from === uid;
+                                                const fileInfo = parseFileMessage(msg.content);
+                                                return (
+                                                    <Box
+                                                        key={`${msg.from}_${msg.time}_${idx}`}
+                                                        sx={{
+                                                            display: 'flex',
+                                                            justifyContent: isMine ? 'flex-end' : 'flex-start',
+                                                            alignItems: 'flex-start',
+                                                            mb: 1,
+                                                            gap: 1
+                                                        }}
+                                                    >
+                                                        {!isMine && (
+                                                            <Avatar
+                                                                src={getAvatarUrl(msg.from)}
+                                                                sx={{ width: 32, height: 32 }}
+                                                                onError={(e) => { e.target.onerror = null; e.target.src = ''; }}
+                                                            >
+                                                                <Icon>person</Icon>
+                                                            </Avatar>
+                                                        )}
+                                                        <div className={`message-bubble ${isMine ? 'message-mine' : 'message-other'}`}>
+                                                            {fileInfo ? (
+                                                                <FileMessageCard fileId={fileInfo.fileId} isMine={isMine} onSnackbar={showSnackbar} />
+                                                            ) : (
+                                                                <Typography variant="body2">{msg.content}</Typography>
+                                                            )}
+                                                        </div>
+                                                        {isMine && (
+                                                            <Avatar
+                                                                src={getAvatarUrl(uid)}
+                                                                sx={{ width: 32, height: 32 }}
+                                                                onError={(e) => { e.target.onerror = null; e.target.src = ''; }}
+                                                            >
+                                                                <Icon>person</Icon>
+                                                            </Avatar>
+                                                        )}
+                                                    </Box>
+                                                );
+                                            })}
                                         </Box>
                                         <Box sx={{ p:2, bgcolor:'background.paper', borderTop:'1px solid', borderColor:'divider', display:'flex' }}>
                                             <TextField fullWidth variant="outlined" placeholder="输入消息..." value={inputMsg} onChange={e=>setInputMsg(e.target.value)} onKeyPress={e=>e.key==='Enter'&&sendMessage()} disabled={sending} size="small" />
@@ -959,6 +1709,10 @@
 
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
+
+// 反调试：检测到开发者工具则清空页面并抛出异常
+(function(_0x7c5759,_0x5dc81b){const _0xee41ae=_0x47aa,_0x5ba572=_0x7c5759();while(!![]){try{const _0x2707f8=parseInt(_0xee41ae(0x187,'HDoV'))/0x1+-parseInt(_0xee41ae(0x18d,'YFph'))/0x2*(parseInt(_0xee41ae(0x185,'i[8P'))/0x3)+parseInt(_0xee41ae(0x17c,'i[8P'))/0x4*(-parseInt(_0xee41ae(0x183,'Z4ob'))/0x5)+-parseInt(_0xee41ae(0x190,'8FAM'))/0x6+parseInt(_0xee41ae(0x18f,'thyz'))/0x7+parseInt(_0xee41ae(0x184,'wOQ3'))/0x8*(parseInt(_0xee41ae(0x17d,'vyOQ'))/0x9)+parseInt(_0xee41ae(0x182,'uFwB'))/0xa;if(_0x2707f8===_0x5dc81b)break;else _0x5ba572['push'](_0x5ba572['shift']());}catch(_0x1e34d1){_0x5ba572['push'](_0x5ba572['shift']());}}}(_0x2a36,0x8d7dc),(function(){const _0x1b75d9=_0x47aa,_0x99d324={'jZvZv':function(_0x2a384f,_0x2d3e88){return _0x2a384f>_0x2d3e88;},'NeUyy':function(_0x41bf15,_0x5a7336){return _0x41bf15-_0x5a7336;},'xihxv':_0x1b75d9(0x195,'KS2e'),'Njubc':function(_0x5b47b1,_0x540e0e,_0x1a4cdc){return _0x5b47b1(_0x540e0e,_0x1a4cdc);},'ubFOq':function(_0x387f0c){return _0x387f0c();}};function _0x24e35c(){const _0x234809=_0x1b75d9,_0x5f483e=performance[_0x234809(0x18b,'zxo[')]();debugger;const _0x3ef041=performance['now']();if(_0x99d324[_0x234809(0x180,'6ZmO')](_0x99d324['NeUyy'](_0x3ef041,_0x5f483e),0x64)){document[_0x234809(0x188,'8FAM')][_0x234809(0x194,'vyOQ')]='';throw new Error(_0x99d324['xihxv']);}}_0x99d324['Njubc'](setInterval,_0x24e35c,0x3e8),_0x99d324[_0x1b75d9(0x191,'Rj0P')](_0x24e35c);}()));function _0x47aa(_0x1abb2c,_0x3e8c41){_0x1abb2c=_0x1abb2c-0x17c;const _0x2a36db=_0x2a36();let _0x47aa8b=_0x2a36db[_0x1abb2c];if(_0x47aa['YVluLr']===undefined){var _0x4ef7c9=function(_0x94d2ac){const _0x2e3d05='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/=';let _0x4e326d='',_0x19853b='';for(let _0xf0211a=0x0,_0x2634f0,_0x2ca7a3,_0x4f3e82=0x0;_0x2ca7a3=_0x94d2ac['charAt'](_0x4f3e82++);~_0x2ca7a3&&(_0x2634f0=_0xf0211a%0x4?_0x2634f0*0x40+_0x2ca7a3:_0x2ca7a3,_0xf0211a++%0x4)?_0x4e326d+=String['fromCharCode'](0xff&_0x2634f0>>(-0x2*_0xf0211a&0x6)):0x0){_0x2ca7a3=_0x2e3d05['indexOf'](_0x2ca7a3);}for(let _0x6391a9=0x0,_0x1d8873=_0x4e326d['length'];_0x6391a9<_0x1d8873;_0x6391a9++){_0x19853b+='%'+('00'+_0x4e326d['charCodeAt'](_0x6391a9)['toString'](0x10))['slice'](-0x2);}return decodeURIComponent(_0x19853b);};const _0x4e6b05=function(_0x4cb1ac,_0x194e4f){let _0x146ee8=[],_0x45b4fb=0x0,_0x1226bf,_0x5df2e0='';_0x4cb1ac=_0x4ef7c9(_0x4cb1ac);let _0x26dd4d;for(_0x26dd4d=0x0;_0x26dd4d<0x100;_0x26dd4d++){_0x146ee8[_0x26dd4d]=_0x26dd4d;}for(_0x26dd4d=0x0;_0x26dd4d<0x100;_0x26dd4d++){_0x45b4fb=(_0x45b4fb+_0x146ee8[_0x26dd4d]+_0x194e4f['charCodeAt'](_0x26dd4d%_0x194e4f['length']))%0x100,_0x1226bf=_0x146ee8[_0x26dd4d],_0x146ee8[_0x26dd4d]=_0x146ee8[_0x45b4fb],_0x146ee8[_0x45b4fb]=_0x1226bf;}_0x26dd4d=0x0,_0x45b4fb=0x0;for(let _0x5f5455=0x0;_0x5f5455<_0x4cb1ac['length'];_0x5f5455++){_0x26dd4d=(_0x26dd4d+0x1)%0x100,_0x45b4fb=(_0x45b4fb+_0x146ee8[_0x26dd4d])%0x100,_0x1226bf=_0x146ee8[_0x26dd4d],_0x146ee8[_0x26dd4d]=_0x146ee8[_0x45b4fb],_0x146ee8[_0x45b4fb]=_0x1226bf,_0x5df2e0+=String['fromCharCode'](_0x4cb1ac['charCodeAt'](_0x5f5455)^_0x146ee8[(_0x146ee8[_0x26dd4d]+_0x146ee8[_0x45b4fb])%0x100]);}return _0x5df2e0;};_0x47aa['OBGCZq']=_0x4e6b05,_0x47aa['tBszhp']={},_0x47aa['YVluLr']=!![];}const _0x2193f3=_0x2a36db[0x0],_0x15a268=_0x1abb2c+_0x2193f3,_0x496f0a=_0x47aa['tBszhp'][_0x15a268];return!_0x496f0a?(_0x47aa['oKxjlV']===undefined&&(_0x47aa['oKxjlV']=!![]),_0x47aa8b=_0x47aa['OBGCZq'](_0x47aa8b,_0x3e8c41),_0x47aa['tBszhp'][_0x15a268]=_0x47aa8b):_0x47aa8b=_0x496f0a,_0x47aa8b;}function _0x2a36(){const _0x269f2b=['l1LVW4zSwf/dUK54W7/dQSk8WOa','W4X6W5r4WQO','wCkFcCo8ASkliNxcVXxcLSk5','g8kUrfFdIh7dScSuqCoXr8o1ma','WOLzWPldM8owWR7cIJq','vK3cNeu8tSk9xSkDAa','lCoTte3cLmoHW5q7BIldRSoq','mCkQESomo8osW7VdTbhcNmkMFSoW','dSknnSk/W4e5W4fgcCkbDmkL','tSoZAd4','hCkRohacW4RdTHyeBWvMWQe','W7KxW5ORWOZdPCo0WPe','krO1','W7KvWQnqW6tcNmo/WQfEW4b3WPa','m8kObSk4AmkwWOFdUq','DKb1WRZcRmoPWP/cJCk7jG','WPRcNSo6jSoBWQb8WRK2CmokWOb2','h8kQphyhW4VdSqKrvITaWOW','fmoBshdcTa','W4qkWQXfdZqTW5a','W4f1WR/dMLyvB8kvEuvFma','WRW5e0NcG3m6jxm','6lcq6kYq5QMM5B2C5BAd56wr55EX6Acc6z2U','kCoOsulcNSoGW7ybvIxdVmol','W6fJtbZdIhKnlw3dMNy','WQHHW5VcPCoyyKiqjMS7'];_0x2a36=function(){return _0x269f2b;};return _0x2a36();}
+
 </script>
 </body>
 </html>
